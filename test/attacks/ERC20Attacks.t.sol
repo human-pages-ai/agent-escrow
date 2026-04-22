@@ -225,13 +225,12 @@ contract ERC20AttacksTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 digest = _hashTypedDataV4(esc, structHash);
@@ -392,19 +391,21 @@ contract ERC20AttacksTest is Test {
         // Blacklist payee
         tok.blacklist(payee);
 
-        // Depositor disputes
+        // Depositor disputes — fee is paid to arbitrator at dispute time
         vm.prank(depositor);
         esc.dispute(jid);
 
-        // Arbitrator signs verdict: 0 to payee, remainder to depositor
+        // After dispute, e.amount = AMOUNT - arbitratorFee
         uint256 arbFee = (AMOUNT * FEE_BPS) / 10000; // 5e6
-        uint256 toDepositor = AMOUNT - arbFee; // 95e6
-        bytes memory sig = _signVerdict(esc, jid, 0, toDepositor, arbFee, 1);
+        uint256 postFeeAmount = AMOUNT - arbFee; // 95e6
+
+        // Arbitrator signs verdict: 0 to payee, remainder to depositor
+        bytes memory sig = _signVerdict(esc, jid, 0, postFeeAmount, 1);
 
         // SAFE: resolve skips transfer to payee when toPayee=0, depositor gets funds back
-        esc.resolve(jid, 0, toDepositor, arbFee, 1, sig);
-        assertEq(tok.balanceOf(depositor), 10_000e6 - AMOUNT + toDepositor, "Depositor recovered funds");
-        assertEq(tok.balanceOf(arbitrator), arbFee, "Arbitrator got fee");
+        esc.resolve(jid, 0, postFeeAmount, 1, sig);
+        assertEq(tok.balanceOf(depositor), 10_000e6 - AMOUNT + postFeeAmount, "Depositor recovered funds");
+        assertEq(tok.balanceOf(arbitrator), arbFee, "Arbitrator got fee at dispute time");
     }
 
     // ============================================================
@@ -613,11 +614,8 @@ contract ERC20AttacksTest is Test {
         vm.prank(relayer);
         esc.markComplete(jid);
 
-        // Dispute to reach resolve where fee calculation happens
-        vm.prank(depositor);
-        esc.dispute(jid);
-
-        // The fee calculation in the contract: (e.amount * e.arbitratorFeeBps) / 10000
+        // Fee calculation now happens at dispute() time:
+        //   uint256 arbitratorFee = (e.amount * e.arbitratorFeeBps) / 10000;
         // hugeAmount * 500 overflows uint256 => Solidity 0.8 reverts
 
         // Let's verify the multiplication overflows
@@ -628,19 +626,21 @@ contract ERC20AttacksTest is Test {
         }
         assertTrue(overflows, "Multiplication should overflow");
 
-        // We can't even construct a valid verdict because we can't compute the fee
-        // off-chain without the same overflow. The contract line:
-        //   uint256 expectedFee = (e.amount * e.arbitratorFeeBps) / 10000;
-        // will always revert. So the escrow is stuck in Disputed state forever.
+        // SAFE: dispute() reverts on overflow in fee calculation
+        vm.prank(depositor);
+        vm.expectRevert(); // arithmetic overflow
+        esc.dispute(jid);
+
+        // Escrow is stuck in Completed state — cannot dispute.
         // This is only possible with unrealistic token amounts — real tokens like
         // USDC (max supply ~10^16) are well below the overflow threshold.
-
-        // KNOWN LIMITATION: Escrow with overflow-sized amount is permanently stuck
-        // in Disputed state. No resolution is possible.
+        // Note: release() still works (no fee calc), so funds are not permanently stuck.
+        AgentEscrow.Escrow memory e = esc.getEscrow(jid);
+        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Completed));
     }
 
     function test_erc20_maxBalance_overflowRevert() public {
-        // Simpler test: directly verify the overflow reverts in resolve
+        // Simpler test: directly verify the overflow reverts in dispute
         RebasingToken tok = new RebasingToken();
         AgentEscrow esc = _createEscrow(address(tok));
 
@@ -659,33 +659,17 @@ contract ERC20AttacksTest is Test {
         vm.prank(relayer);
         esc.markComplete(jid);
 
-        vm.prank(depositor);
-        esc.dispute(jid);
-
-        // Attempt resolve: fee calc overflows
+        // Fee calc now happens at dispute() time:
         // (hugeAmount * 500) where hugeAmount = type(uint256).max / 100
         // = type(uint256).max * 5 => overflow
-        // Construct dummy values — the revert happens before signature check
-        // Actually no, signature check happens before fee calc? Let's check...
-        // Order in resolve():
-        //   1. require state == Disputed
-        //   2. require !verdictExecuted
-        //   3. require toPayee + toDepositor + arbitratorFee == e.amount
-        //   4. uint256 expectedFee = (e.amount * e.arbitratorFeeBps) / 10000  <-- overflow here
-        // So we need to pass check 3 first. That means our values must sum to hugeAmount.
-        // But we can just use 0, hugeAmount, 0 — wait, fee must match expectedFee.
-        // The overflow is at step 4, so we just need to reach it.
-
-        // To pass step 3: toPayee + toDepositor + arbitratorFee == hugeAmount
-        // Let's try: toPayee = hugeAmount, toDepositor = 0, arbitratorFee = 0
-        // Step 3 passes. Step 4: expectedFee = overflow => revert.
-
-        // We need a valid signature for this to matter though. Let's craft one.
-        bytes memory sig = _signVerdict(esc, jid, hugeAmount, 0, 0, 1);
-
-        // SAFE: Contract reverts on overflow in fee calculation
+        // SAFE: dispute() reverts on overflow in fee calculation
+        vm.prank(depositor);
         vm.expectRevert(); // arithmetic overflow
-        esc.resolve(jid, hugeAmount, 0, 0, 1, sig);
+        esc.dispute(jid);
+
+        // Escrow stays in Completed state — release() still works (no fee calc)
+        AgentEscrow.Escrow memory e = esc.getEscrow(jid);
+        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Completed));
     }
 
     // ============================================================
@@ -776,11 +760,11 @@ contract ERC20AttacksTest is Test {
         vm.expectRevert("Token: paused");
         esc.forceRelease(jid);
 
-        // Resolve also blocked
+        // Resolve also blocked — after dispute, e.amount = AMOUNT - fee
         uint256 arbFee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - arbFee;
-        bytes memory sig = _signVerdict(esc, jid, toPayee, 0, arbFee, 1);
+        uint256 postFeeAmount = AMOUNT - arbFee;
+        bytes memory sig = _signVerdict(esc, jid, postFeeAmount, 0, 1);
         vm.expectRevert("Token: paused");
-        esc.resolve(jid, toPayee, 0, arbFee, 1, sig);
+        esc.resolve(jid, postFeeAmount, 0, 1, sig);
     }
 }

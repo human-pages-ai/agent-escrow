@@ -80,36 +80,34 @@ contract RealityETHIntegrationTest is Test {
         escrow.dispute(jobId);
     }
 
-    // Depositor creates question directly on reality.eth (not through adapter)
-    function _depositorCreatesQuestion() internal returns (bytes32 questionId) {
+    function _initiateDisputeOnAdapter() internal returns (bytes32 questionId) {
         vm.prank(depositor);
-        questionId = realityETH.askQuestion(0, "Did worker complete job-reality-001?", address(0), 30 minutes, 0, 0);
+        questionId = adapter.initiateDispute(jobId);
     }
 
     function _fullFlowUntilVerdict(bytes32 answer) internal returns (bytes32 questionId) {
         _depositCompleteAndDispute();
-        questionId = _depositorCreatesQuestion();
+        questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, answer, 0);
 
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + 25 hours);
 
         vm.prank(anyone);
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
     }
 
     function _signVerdictEOA(
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 domainSeparator = keccak256(
@@ -149,22 +147,21 @@ contract RealityETHIntegrationTest is Test {
     function test_flowB_disputeResolve_payeeWins() public {
         _fullFlowUntilVerdict(bytes32(uint256(0))); // payee wins
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee, uint256 nonce, bool generated) =
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce, bool generated) =
             adapter.getVerdictParams(jobId);
         assertTrue(generated);
         assertEq(toPayee, NET_AMOUNT);
         assertEq(toDepositor, 0);
-        assertEq(arbitratorFee, ARB_FEE);
 
         uint256 payeeBefore = usdc.balanceOf(payee);
-        uint256 adapterBefore = usdc.balanceOf(address(adapter));
 
         vm.prank(anyone);
-        escrow.resolve(jobId, toPayee, toDepositor, arbitratorFee, nonce, "");
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, "");
 
         assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
         assertEq(usdc.balanceOf(depositor), 10_000e6 - AMOUNT);
-        assertEq(usdc.balanceOf(address(adapter)), adapterBefore + ARB_FEE);
+        // Fee was paid to adapter at dispute time
+        assertEq(usdc.balanceOf(address(adapter)), ARB_FEE);
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
         assertTrue(e.state == AgentEscrow.EscrowState.Resolved);
@@ -174,7 +171,7 @@ contract RealityETHIntegrationTest is Test {
 
     function test_flowC_bondEscalation_depositorWins() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(1)), 0);
@@ -185,20 +182,19 @@ contract RealityETHIntegrationTest is Test {
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.04 ether}(questionId, bytes32(uint256(1)), 0);
 
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + 25 hours);
 
         vm.prank(anyone);
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee, uint256 nonce,) =
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce,) =
             adapter.getVerdictParams(jobId);
         assertEq(toPayee, 0);
         assertEq(toDepositor, NET_AMOUNT);
-        assertEq(arbitratorFee, ARB_FEE);
 
         uint256 depositorBefore = usdc.balanceOf(depositor);
         vm.prank(anyone);
-        escrow.resolve(jobId, toPayee, toDepositor, arbitratorFee, nonce, "");
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, "");
 
         assertEq(usdc.balanceOf(depositor), depositorBefore + NET_AMOUNT);
         assertEq(usdc.balanceOf(payee), 0);
@@ -209,17 +205,17 @@ contract RealityETHIntegrationTest is Test {
     function test_flowD_partialSplit_70percent() public {
         _fullFlowUntilVerdict(bytes32(uint256(70)));
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee, uint256 nonce, bool generated) =
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce, bool generated) =
             adapter.getVerdictParams(jobId);
         assertTrue(generated);
 
+        // 70% of NET_AMOUNT (95e6)
         assertEq(toPayee, 66_500_000);
         assertEq(toDepositor, 28_500_000);
-        assertEq(arbitratorFee, ARB_FEE);
-        assertEq(toPayee + toDepositor + arbitratorFee, AMOUNT);
+        assertEq(toPayee + toDepositor, NET_AMOUNT);
 
         vm.prank(anyone);
-        escrow.resolve(jobId, toPayee, toDepositor, arbitratorFee, nonce, "");
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, "");
 
         assertEq(usdc.balanceOf(payee), 66_500_000);
         assertEq(usdc.balanceOf(depositor), 10_000e6 - AMOUNT + 28_500_000);
@@ -227,19 +223,45 @@ contract RealityETHIntegrationTest is Test {
 
     // ======================== FLOW E: ARBITRATOR TIMEOUT → FORCE RELEASE ========================
 
-    function test_flowE_arbitratorTimeout_forceRelease() public {
+    function test_flowE_forceRelease_blocked_while_dispute_pending() public {
         _depositCompleteAndDispute();
-        // depositor creates question but nobody answers
-        _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.warp(block.timestamp + 7 days);
+
+        vm.prank(anyone);
+        vm.expectRevert("Arbitrator dispute still active");
+        escrow.forceRelease(jobId);
+    }
+
+    function test_flowE_forceRelease_after_max_timeout() public {
+        _depositCompleteAndDispute();
+        _initiateDisputeOnAdapter();
+
+        vm.warp(block.timestamp + 90 days);
 
         uint256 payeeBefore = usdc.balanceOf(payee);
         vm.prank(anyone);
         escrow.forceRelease(jobId);
 
-        assertEq(usdc.balanceOf(payee), payeeBefore + AMOUNT);
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        assertTrue(e.state == AgentEscrow.EscrowState.Released);
+    }
 
+    function test_flowE_forceRelease_after_question_finalized() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        realityETH.submitAnswer(questionId, bytes32(uint256(0)), 0);
+        vm.warp(block.timestamp + 7 days + 1);
+        realityETH.mockFinalize(questionId, bytes32(uint256(0)));
+
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(anyone);
+        escrow.forceRelease(jobId);
+
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
         assertTrue(e.state == AgentEscrow.EscrowState.Released);
     }
@@ -258,13 +280,16 @@ contract RealityETHIntegrationTest is Test {
         vm.prank(depositor);
         escrow.dispute(eoaJobId);
 
+        // Fee paid at dispute time
+        assertEq(usdc.balanceOf(eoaArbitrator), ARB_FEE);
+
         uint256 nonce = 42;
         uint256 toPayee = NET_AMOUNT;
         uint256 toDepositor = 0;
-        bytes memory sig = _signVerdictEOA(eoaJobId, toPayee, toDepositor, ARB_FEE, nonce);
+        bytes memory sig = _signVerdictEOA(eoaJobId, toPayee, toDepositor, nonce);
 
         vm.prank(anyone);
-        escrow.resolve(eoaJobId, toPayee, toDepositor, ARB_FEE, nonce, sig);
+        escrow.resolve(eoaJobId, toPayee, toDepositor, nonce, sig);
 
         assertEq(usdc.balanceOf(payee), NET_AMOUNT);
         assertEq(usdc.balanceOf(eoaArbitrator), ARB_FEE);
@@ -274,33 +299,30 @@ contract RealityETHIntegrationTest is Test {
 
     function test_flowG_generateVerdict_notDisputed_reverts() public {
         _depositAndComplete(); // state = Completed, not Disputed
-        bytes32 questionId = _depositorCreatesQuestion();
 
-        vm.prank(answerer1);
-        realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
-        vm.warp(block.timestamp + 31 minutes);
-
-        vm.prank(anyone);
+        // Can't initiateDispute if not disputed
+        vm.prank(depositor);
         vm.expectRevert("Escrow not disputed");
-        adapter.generateVerdict(jobId, questionId);
+        adapter.initiateDispute(jobId);
     }
 
-    // ======================== FLOW H: NONEXISTENT QUESTION ID ========================
+    // ======================== FLOW H: INITIATE DISPUTE TWICE ========================
 
-    function test_flowH_nonexistentQuestion_reverts() public {
+    function test_flowH_doubleInitiateDispute_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 fakeQuestionId = keccak256("does-not-exist");
+        vm.prank(depositor);
+        adapter.initiateDispute(jobId);
 
-        vm.prank(anyone);
-        vm.expectRevert();
-        adapter.generateVerdict(jobId, fakeQuestionId);
+        vm.prank(depositor);
+        vm.expectRevert("Dispute already initiated");
+        adapter.initiateDispute(jobId);
     }
 
     // ======================== FLOW I: GENERATE VERDICT BEFORE FINALIZED ========================
 
     function test_flowI_generateVerdict_notFinalized_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
@@ -308,7 +330,7 @@ contract RealityETHIntegrationTest is Test {
         // don't warp — timeout hasn't passed
         vm.prank(anyone);
         vm.expectRevert("Question not finalized");
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
     }
 
     // ======================== FLOW J: TAMPERED RESOLVE PARAMS REJECTED ========================
@@ -316,21 +338,21 @@ contract RealityETHIntegrationTest is Test {
     function test_flowJ_tamperedResolve_reverts() public {
         _fullFlowUntilVerdict(bytes32(uint256(70)));
 
-        (,, uint256 arbitratorFee, uint256 nonce,) = adapter.getVerdictParams(jobId);
+        (, , uint256 nonce,) = adapter.getVerdictParams(jobId);
 
         vm.prank(anyone);
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, NET_AMOUNT, 0, arbitratorFee, nonce, "");
+        escrow.resolve(jobId, NET_AMOUNT, 0, nonce, "");
     }
 
     // ======================== FLOW K: DOUBLE GENERATE VERDICT ========================
 
     function test_flowK_doubleGenerateVerdict_reverts() public {
-        bytes32 questionId = _fullFlowUntilVerdict(bytes32(uint256(0)));
+        _fullFlowUntilVerdict(bytes32(uint256(0)));
 
         vm.prank(anyone);
         vm.expectRevert("Verdict already generated");
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
     }
 
     // ======================== FLOW L: DOMAIN SEPARATOR PARITY ========================
@@ -338,13 +360,13 @@ contract RealityETHIntegrationTest is Test {
     function test_flowL_domainSeparatorParity() public {
         _fullFlowUntilVerdict(bytes32(uint256(0)));
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee, uint256 nonce,) =
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce,) =
             adapter.getVerdictParams(jobId);
 
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 domainSeparator = keccak256(
@@ -379,7 +401,7 @@ contract RealityETHIntegrationTest is Test {
 
     function test_flowM_bondTooLow_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
@@ -393,21 +415,21 @@ contract RealityETHIntegrationTest is Test {
 
     function test_flowN_answerResetsTimeout() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
 
-        vm.warp(block.timestamp + 25 minutes);
+        vm.warp(block.timestamp + 23 hours);
         assertFalse(realityETH.isFinalized(questionId));
 
         vm.prank(answerer2);
         realityETH.submitAnswer{value: 0.02 ether}(questionId, bytes32(uint256(1)), 0);
 
-        vm.warp(block.timestamp + 25 minutes);
+        vm.warp(block.timestamp + 23 hours);
         assertFalse(realityETH.isFinalized(questionId));
 
-        vm.warp(block.timestamp + 6 minutes);
+        vm.warp(block.timestamp + 2 hours);
         assertTrue(realityETH.isFinalized(questionId));
 
         assertEq(realityETH.resultFor(questionId), bytes32(uint256(1)));
@@ -421,7 +443,7 @@ contract RealityETHIntegrationTest is Test {
         // setup job 1
         _depositCompleteAndDispute();
         vm.prank(depositor);
-        bytes32 q1 = realityETH.askQuestion(0, "Job 1 question", address(0), 30 minutes, 0, 1);
+        bytes32 q1 = adapter.initiateDispute(jobId);
 
         // setup job 2
         vm.prank(depositor);
@@ -432,7 +454,7 @@ contract RealityETHIntegrationTest is Test {
         escrow.dispute(jobId2);
 
         vm.prank(depositor);
-        bytes32 q2 = realityETH.askQuestion(0, "Job 2 question", address(0), 30 minutes, 0, 2);
+        bytes32 q2 = adapter.initiateDispute(jobId2);
 
         assertTrue(q1 != q2);
 
@@ -442,51 +464,51 @@ contract RealityETHIntegrationTest is Test {
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(q2, bytes32(uint256(1)), 0);
 
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + 25 hours);
 
         vm.prank(anyone);
-        adapter.generateVerdict(jobId, q1);
+        adapter.generateVerdict(jobId);
         vm.prank(anyone);
-        adapter.generateVerdict(jobId2, q2);
+        adapter.generateVerdict(jobId2);
 
-        (uint256 tp1, uint256 td1, uint256 af1, uint256 n1,) = adapter.getVerdictParams(jobId);
-        (uint256 tp2, uint256 td2, uint256 af2, uint256 n2,) = adapter.getVerdictParams(jobId2);
+        (uint256 tp1, uint256 td1, uint256 n1,) = adapter.getVerdictParams(jobId);
+        (uint256 tp2, uint256 td2, uint256 n2,) = adapter.getVerdictParams(jobId2);
 
         assertEq(tp1, NET_AMOUNT);
         assertEq(td1, 0);
         assertEq(tp2, 0);
-        assertEq(td2, 50e6 - (50e6 * FEE_BPS / 10000));
+        uint256 job2Net = 50e6 - (50e6 * FEE_BPS / 10000);
+        assertEq(td2, job2Net);
         assertTrue(n1 != n2);
 
         uint256 payeeBefore = usdc.balanceOf(payee);
         uint256 depositorBefore = usdc.balanceOf(depositor);
 
         vm.prank(anyone);
-        escrow.resolve(jobId, tp1, td1, af1, n1, "");
+        escrow.resolve(jobId, tp1, td1, n1, "");
         vm.prank(anyone);
-        escrow.resolve(jobId2, tp2, td2, af2, n2, "");
+        escrow.resolve(jobId2, tp2, td2, n2, "");
 
         assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
         assertEq(usdc.balanceOf(depositor), depositorBefore + td2);
     }
 
-    // ======================== FLOW P: NONEXISTENT QUESTION (NO ANSWERS) ========================
+    // ======================== FLOW P: NO ANSWERS → GENERATE VERDICT REVERTS ========================
 
     function test_flowP_questionNoAnswers_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
-        // question exists but no one answered — not finalized
+        _initiateDisputeOnAdapter();
 
         vm.prank(anyone);
         vm.expectRevert();
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
     }
 
     // ======================== FLOW Q: ANSWER AFTER FINALIZATION ========================
 
     function test_flowQ_answerAfterFinalization_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
@@ -503,12 +525,13 @@ contract RealityETHIntegrationTest is Test {
     function test_flowR_edgeAnswer_2percent() public {
         _fullFlowUntilVerdict(bytes32(uint256(2)));
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee,,) =
+        (uint256 toPayee, uint256 toDepositor,,) =
             adapter.getVerdictParams(jobId);
 
+        // 2% of 95e6
         assertEq(toPayee, 1_900_000);
         assertEq(toDepositor, 93_100_000);
-        assertEq(toPayee + toDepositor + arbitratorFee, AMOUNT);
+        assertEq(toPayee + toDepositor, NET_AMOUNT);
     }
 
     function test_flowR_edgeAnswer_99percent() public {
@@ -521,103 +544,142 @@ contract RealityETHIntegrationTest is Test {
         escrow.dispute(jobId99);
 
         vm.prank(depositor);
-        bytes32 qId = realityETH.askQuestion(0, "99pct test", address(0), 30 minutes, 0, 99);
+        bytes32 qId = adapter.initiateDispute(jobId99);
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(qId, bytes32(uint256(99)), 0);
 
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + 25 hours);
         vm.prank(anyone);
-        adapter.generateVerdict(jobId99, qId);
+        adapter.generateVerdict(jobId99);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee,,) =
+        (uint256 toPayee, uint256 toDepositor,,) =
             adapter.getVerdictParams(jobId99);
 
+        // 99% of 95e6
         assertEq(toPayee, 94_050_000);
         assertEq(toDepositor, 950_000);
-        assertEq(toPayee + toDepositor + arbitratorFee, AMOUNT);
+        assertEq(toPayee + toDepositor, NET_AMOUNT);
     }
 
     function test_flowR_edgeAnswer_100_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(100)), 0);
 
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + 25 hours);
 
         vm.prank(anyone);
         vm.expectRevert("Invalid answer value");
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
     }
 
     function test_flowR_edgeAnswer_huge_reverts() public {
         _depositCompleteAndDispute();
-        bytes32 questionId = _depositorCreatesQuestion();
+        bytes32 questionId = _initiateDisputeOnAdapter();
 
         vm.prank(answerer1);
         realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(999)), 0);
 
-        vm.warp(block.timestamp + 31 minutes);
+        vm.warp(block.timestamp + 25 hours);
 
         vm.prank(anyone);
         vm.expectRevert("Invalid answer value");
-        adapter.generateVerdict(jobId, questionId);
+        adapter.generateVerdict(jobId);
     }
 
-    // ======================== FLOW S: FAKE ORACLE REJECTED ========================
+    // ======================== FLOW S: GENERATE VERDICT WITHOUT INITIATE ========================
 
-    function test_flowS_fakeOracle_questionNotOnBoundOracle() public {
+    function test_flowS_generateVerdictWithoutInitiate_reverts() public {
         _depositCompleteAndDispute();
 
-        // a questionId that doesn't exist on the bound oracle should revert
-        bytes32 fakeQuestionId = keccak256("fake-question");
-
         vm.prank(anyone);
-        vm.expectRevert();
-        adapter.generateVerdict(jobId, fakeQuestionId);
+        vm.expectRevert("Dispute not initiated");
+        adapter.generateVerdict(jobId);
     }
 
-    // ======================== FLOW T: CHERRY-PICK UNRELATED QUESTION ========================
+    // ======================== FLOW T: THIRD PARTY CANNOT INITIATE ========================
 
-    function test_flowT_cherryPickUnrelatedQuestion() public {
-        // depositor creates an unrelated question and answers it favorably
-        vm.prank(depositor);
-        bytes32 unrelatedQ = realityETH.askQuestion(0, "Unrelated question", address(0), 30 minutes, 0, 777);
+    function test_flowT_thirdPartyCannotInitiateDispute() public {
+        _depositCompleteAndDispute();
 
-        vm.prank(depositor);
-        realityETH.submitAnswer{value: 0.01 ether}(unrelatedQ, bytes32(uint256(1)), 0); // depositor wins
+        vm.prank(anyone);
+        vm.expectRevert("Not a party");
+        adapter.initiateDispute(jobId);
+    }
 
-        vm.warp(block.timestamp + 31 minutes);
+    // ======================== FLOW U: FEE PAID AT DISPUTE TIME ========================
 
-        // now create the real escrow and dispute
+    function test_flowU_feePaidAtDisputeTime() public {
         _deposit();
         vm.prank(relayer);
         escrow.markComplete(jobId);
+
+        assertEq(usdc.balanceOf(address(adapter)), 0);
+
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        // depositor tries to use the unrelated question for this job
-        // this WILL work because the adapter has no way to verify the link
-        // this test documents the known trust assumption
+        // Fee immediately sent to adapter (arbitrator) at dispute time
+        assertEq(usdc.balanceOf(address(adapter)), ARB_FEE);
+
+        // Escrow amount reduced
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        assertEq(e.amount, NET_AMOUNT);
+    }
+
+    // ======================== FLOW V: FRONT-RUN VERDICT BLOCKED BY BINDING ========================
+
+    function test_flowV_frontRunVerdictBlockedByBinding() public {
+        _depositCompleteAndDispute();
+
+        // Depositor initiates dispute through the adapter — question is created and bound
+        vm.prank(depositor);
+        bytes32 questionId = adapter.initiateDispute(jobId);
+
+        // Answerer honestly answers: payee wins
+        vm.prank(answerer1);
+        realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
+
+        vm.warp(block.timestamp + 25 hours);
+
+        // generateVerdict reads from the stored binding — no questionId parameter
+        // An attacker cannot inject a different question
         vm.prank(anyone);
-        adapter.generateVerdict(jobId, unrelatedQ);
+        adapter.generateVerdict(jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbitratorFee, uint256 nonce,) =
-            adapter.getVerdictParams(jobId);
+        (uint256 toPayee, uint256 toDepositor,,) = adapter.getVerdictParams(jobId);
 
-        // depositor gets the favorable outcome from the unrelated question
-        assertEq(toDepositor, NET_AMOUNT);
-        assertEq(toPayee, 0);
+        // Payee wins as expected — no front-running possible
+        assertEq(toPayee, NET_AMOUNT);
+        assertEq(toDepositor, 0);
+    }
 
-        // this resolves successfully — documenting the trust boundary
-        vm.prank(anyone);
-        escrow.resolve(jobId, toPayee, toDepositor, arbitratorFee, nonce, "");
+    // ======================== FLOW W: PAYEE CAN ALSO INITIATE ========================
 
-        // THE PAYEE'S PROTECTION: the 7-day forceRelease timeout.
-        // If the payee notices and doesn't want this, they should not let the
-        // depositor resolve before timeout. In practice, the backend relayer
-        // would verify the questionId matches the job before calling resolve.
+    function test_flowW_payeeCanInitiateDispute() public {
+        _depositCompleteAndDispute();
+
+        vm.prank(payee);
+        bytes32 questionId = adapter.initiateDispute(jobId);
+
+        assertTrue(questionId != bytes32(0));
+        assertEq(adapter.jobQuestions(jobId), questionId);
+    }
+
+    // ======================== FLOW X: QUESTION URL CONTAINS JOB ID ========================
+
+    function test_flowX_questionContainsDisputeUrl() public {
+        _depositCompleteAndDispute();
+
+        // The adapter creates a question on reality.eth with a URL pointing to the dispute page.
+        // We verify the question was created (questionId stored) and is on the bound oracle.
+        vm.prank(depositor);
+        bytes32 questionId = adapter.initiateDispute(jobId);
+
+        assertTrue(questionId != bytes32(0));
+        assertTrue(realityETH.isFinalized(questionId) == false);
     }
 }

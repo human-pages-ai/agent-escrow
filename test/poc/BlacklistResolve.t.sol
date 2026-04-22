@@ -82,13 +82,12 @@ contract BlacklistResolveTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 domainSeparator = keccak256(
@@ -124,21 +123,22 @@ contract BlacklistResolveTest is Test {
         // Step 2: Blacklist the payee (simulates Circle compliance action)
         usdc.blacklist(payee);
 
-        // Step 3: Arbitrator signs a valid verdict: 50 to payee, 45 to depositor, 5 fee
+        // Step 3: After dispute, fee already paid to arbitrator. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000; // 5e6
+        uint256 postFeeAmount = AMOUNT - fee; // 95e6
         uint256 toPayee = 50e6;
-        uint256 toDepositor = AMOUNT - toPayee - fee; // 45e6
+        uint256 toDepositor = postFeeAmount - toPayee; // 45e6
 
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
 
         // Step 4: resolve() reverts because payee transfer fails
         vm.expectRevert("Blacklistable: account is blacklisted");
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
-        // Step 5: Prove funds are stuck — escrow still holds everything
-        assertEq(usdc.balanceOf(address(escrow)), AMOUNT, "Escrow still holds all funds");
+        // Step 5: Prove funds are stuck — escrow still holds post-fee amount
+        assertEq(usdc.balanceOf(address(escrow)), postFeeAmount, "Escrow still holds post-fee funds");
         assertEq(usdc.balanceOf(depositor), 99_900e6, "Depositor got nothing back");
-        assertEq(usdc.balanceOf(arbitrator), 0, "Arbitrator got nothing");
+        assertEq(usdc.balanceOf(arbitrator), fee, "Arbitrator got fee at dispute time");
 
         // State remains Disputed (revert rolled back the state change)
         e = escrow.getEscrow(jobId);
@@ -158,18 +158,20 @@ contract BlacklistResolveTest is Test {
         // Blacklist the depositor
         usdc.blacklist(depositor);
 
+        // After dispute, fee already paid. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee; // 95e6
         uint256 toPayee = 0;
-        uint256 toDepositor = AMOUNT - fee; // 95e6
+        uint256 toDepositor = postFeeAmount;
 
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
 
         // Even though payee gets 0, the depositor transfer reverts
         vm.expectRevert("Blacklistable: account is blacklisted");
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
-        // Funds still stuck
-        assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
+        // Funds still stuck (post-fee amount)
+        assertEq(usdc.balanceOf(address(escrow)), postFeeAmount);
     }
 
     // ================================================================
@@ -179,22 +181,24 @@ contract BlacklistResolveTest is Test {
 
     function test_poc_blacklisted_arbitrator_blocks_resolve() public {
         _depositAndComplete();
-        _disputeAsDepositor();
 
-        // Blacklist the arbitrator
+        // Blacklist the arbitrator BEFORE dispute
+        // Since fee is now paid at dispute() time, if arbitrator is blacklisted,
+        // dispute() itself will revert when trying to transfer the fee.
         usdc.blacklist(arbitrator);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = 50e6;
-        uint256 toDepositor = AMOUNT - toPayee - fee;
-
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
-
-        // Payee and depositor transfers would succeed, but arbitrator fee transfer reverts
+        // dispute() reverts because fee transfer to blacklisted arbitrator fails
+        vm.prank(depositor);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        escrow.dispute(jobId);
 
+        // Escrow stays in Completed state — funds are not stuck in Disputed
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Completed));
         assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
+
+        // Release is still possible (no dispute occurred)
+        // Unblacklist is not needed for release since it goes to payee
     }
 
     // ================================================================
@@ -216,7 +220,8 @@ contract BlacklistResolveTest is Test {
         vm.expectRevert("Blacklistable: account is blacklisted");
         escrow.forceRelease(jobId);
 
-        assertEq(usdc.balanceOf(address(escrow)), AMOUNT, "Funds permanently stuck");
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(address(escrow)), AMOUNT - fee, "Post-fee funds permanently stuck");
     }
 
     // ================================================================
@@ -256,28 +261,30 @@ contract BlacklistResolveTest is Test {
         _depositAndComplete();
         _disputeAsDepositor();
 
+        // After dispute, fee already paid. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
         uint256 toPayee = 50e6;
-        uint256 toDepositor = AMOUNT - toPayee - fee;
+        uint256 toDepositor = postFeeAmount - toPayee;
 
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
 
         // Blacklist payee, resolve reverts
         usdc.blacklist(payee);
         vm.expectRevert("Blacklistable: account is blacklisted");
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         // Verdict nonce NOT consumed (revert rolled it back)
         assertFalse(escrow.verdictExecuted(keccak256(abi.encode(uint256(1), jobId))));
 
         // Unblacklist payee — same signature works
         usdc.unblacklist(payee);
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         // Now it succeeds
         assertEq(usdc.balanceOf(payee), toPayee);
         assertEq(usdc.balanceOf(depositor), 99_900e6 + toDepositor);
-        assertEq(usdc.balanceOf(arbitrator), fee);
+        assertEq(usdc.balanceOf(arbitrator), fee, "Arbitrator got fee at dispute time");
         assertEq(usdc.balanceOf(address(escrow)), 0);
     }
 }

@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "./interfaces/IArbitratorStatus.sol";
 
 /// @title AgentEscrow — by humans.page
 /// @notice Programmatic smart contract escrow for agent-human transactions. Not a licensed escrow service.
@@ -21,6 +22,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     uint256 public constant MIN_DEPOSIT = 1e6;             // 1 USDC (dust prevention)
     uint256 public constant CANCEL_PROPOSAL_EXPIRY = 7 days;
     uint256 public constant ARBITRATOR_TIMEOUT = 7 days;
+    uint256 public constant MAX_ARBITRATOR_TIMEOUT = 90 days;
     uint256 public constant MAX_ARBITRATOR_FEE_BPS = 5000;  // 50% structural cap
 
     // ======================== STORAGE ========================
@@ -52,7 +54,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
 
     // ======================== EIP-712 ========================
     bytes32 private constant VERDICT_TYPEHASH =
-        keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)");
+        keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)");
 
     // ======================== EVENTS ========================
     event Deposited(
@@ -66,12 +68,11 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     );
     event Completed(bytes32 indexed jobId, uint256 disputeDeadline);
     event Released(bytes32 indexed jobId, address indexed payee, uint256 amount, address releasedBy);
-    event Disputed(bytes32 indexed jobId, address disputedBy);
+    event Disputed(bytes32 indexed jobId, address disputedBy, uint256 arbitratorFee);
     event Resolved(
         bytes32 indexed jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         address arbitrator
     );
     event CancelProposed(bytes32 indexed jobId, uint256 amountToPayee, uint256 amountToDepositor);
@@ -156,7 +157,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ======================== DISPUTE ========================
-    function dispute(bytes32 jobId) external {
+    function dispute(bytes32 jobId) external nonReentrant {
         Escrow storage e = escrows[jobId];
         require(e.state == EscrowState.Completed, "Not completed");
         require(
@@ -168,10 +169,14 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
             "Dispute window passed"
         );
 
+        uint256 arbitratorFee = (e.amount * e.arbitratorFeeBps) / 10000;
+        e.amount -= arbitratorFee;
         e.state = EscrowState.Disputed;
         e.disputedAt = block.timestamp;
 
-        emit Disputed(jobId, msg.sender);
+        if (arbitratorFee > 0) token.safeTransfer(e.arbitrator, arbitratorFee);
+
+        emit Disputed(jobId, msg.sender, arbitratorFee);
     }
 
     // ======================== RESOLVE (EIP-712 VERDICT) ========================
@@ -179,7 +184,6 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         bytes32 jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce,
         bytes calldata signature
     ) external nonReentrant {
@@ -189,13 +193,10 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         bytes32 verdictHash = keccak256(abi.encode(nonce, jobId));
         require(!verdictExecuted[verdictHash], "Verdict already executed");
 
-        require(toPayee + toDepositor + arbitratorFee == e.amount, "Amounts don't sum");
-
-        uint256 expectedFee = (e.amount * e.arbitratorFeeBps) / 10000;
-        require(arbitratorFee == expectedFee, "Fee mismatch");
+        require(toPayee + toDepositor == e.amount, "Amounts don't sum");
 
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, arbitratorFee, nonce)
+            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, nonce)
         );
         bytes32 digest = _hashTypedDataV4(structHash);
         require(
@@ -208,9 +209,8 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
 
         if (toPayee > 0) token.safeTransfer(e.payee, toPayee);
         if (toDepositor > 0) token.safeTransfer(e.depositor, toDepositor);
-        if (arbitratorFee > 0) token.safeTransfer(e.arbitrator, arbitratorFee);
 
-        emit Resolved(jobId, toPayee, toDepositor, arbitratorFee, e.arbitrator);
+        emit Resolved(jobId, toPayee, toDepositor, e.arbitrator);
     }
 
     // ======================== FORCE RELEASE (ARBITRATOR TIMEOUT) ========================
@@ -221,6 +221,13 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
             block.timestamp >= e.disputedAt + ARBITRATOR_TIMEOUT,
             "Timeout not reached"
         );
+
+        if (block.timestamp < e.disputedAt + MAX_ARBITRATOR_TIMEOUT
+            && e.arbitrator.code.length > 0) {
+            try IArbitratorStatus(e.arbitrator).isDisputePending(jobId) returns (bool pending) {
+                require(!pending, "Arbitrator dispute still active");
+            } catch {}
+        }
 
         e.state = EscrowState.Released;
         token.safeTransfer(e.payee, e.amount);

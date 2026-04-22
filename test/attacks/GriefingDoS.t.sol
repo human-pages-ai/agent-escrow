@@ -119,13 +119,12 @@ contract GriefingDoSTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 digest = _hashTypedDataV4(structHash);
@@ -155,13 +154,12 @@ contract GriefingDoSTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 digest = _hashTypedDataV4ForEscrow(structHash, escrowAddr);
@@ -193,7 +191,10 @@ contract GriefingDoSTest is Test {
         vm.warp(block.timestamp + 1 days + 1);
         escrow.forceRelease(jobId);
 
-        assertEq(usdc.balanceOf(payee), AMOUNT, "Payee should receive full amount");
+        // After dispute, fee was paid to arbitrator. Payee gets post-fee amount.
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
+        assertEq(usdc.balanceOf(payee), postFeeAmount, "Payee should receive post-fee amount");
         assertEq(usdc.balanceOf(address(escrow)), 0, "Escrow should be empty");
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
@@ -219,17 +220,21 @@ contract GriefingDoSTest is Test {
         // any random signature will fail
         bytes memory fakeSig = new bytes(65);
         fakeSig[64] = bytes1(uint8(27)); // valid v value
+        // After dispute, fee already paid. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
         vm.expectRevert(); // will revert due to invalid signature
-        escrow.resolve(jobId, AMOUNT - fee, 0, fee, 1, fakeSig);
+        escrow.resolve(jobId, postFeeAmount, 0, 1, fakeSig);
 
         // Only option: wait 7 days for forceRelease
         vm.warp(block.timestamp + 7 days + 1);
         escrow.forceRelease(jobId);
 
-        // Depositor gets NOTHING. Payee gets everything.
-        assertEq(usdc.balanceOf(payee), AMOUNT, "Payee receives full amount");
+        // Depositor gets NOTHING. Payee gets post-fee amount. Arbitrator got fee at dispute time.
+        uint256 arbFee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(payee), AMOUNT - arbFee, "Payee receives post-fee amount");
         assertEq(usdc.balanceOf(depositor), 100_000e6 - AMOUNT, "Depositor loses deposit");
+        assertEq(usdc.balanceOf(arbitrator), arbFee, "Arbitrator got fee at dispute time");
     }
 
     // ================================================================
@@ -262,7 +267,8 @@ contract GriefingDoSTest is Test {
         // 2. Wait 7 days for forceRelease (payee gets all)
         vm.warp(block.timestamp + 7 days + 1);
         escrow.forceRelease(jobId);
-        assertEq(usdc.balanceOf(payee), AMOUNT);
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(payee), AMOUNT - fee);
     }
 
     // ================================================================
@@ -302,11 +308,13 @@ contract GriefingDoSTest is Test {
         escrow.pause();
 
         // resolve still works while paused
+        // After dispute, fee already paid. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
         uint256 toPayee = 70e6;
-        uint256 toDepositor = AMOUNT - toPayee - fee;
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        uint256 toDepositor = postFeeAmount - toPayee;
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         assertEq(usdc.balanceOf(payee), toPayee);
         assertEq(usdc.balanceOf(depositor), 100_000e6 - AMOUNT + toDepositor);
@@ -324,7 +332,8 @@ contract GriefingDoSTest is Test {
 
         vm.warp(block.timestamp + 7 days + 1);
         escrow.forceRelease(jobId);
-        assertEq(usdc.balanceOf(payee), AMOUNT);
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(payee), AMOUNT - fee);
     }
 
     /// @notice Paused + acceptCancel still works
@@ -450,14 +459,15 @@ contract GriefingDoSTest is Test {
         escrow2.forceRelease(jid);
 
         // resolve() with toPayee=0 is the ONLY way to recover funds
+        // After dispute, fee already paid to arbitrator. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toDepositor = AMOUNT - fee;
-        bytes memory sig2 = _signVerdictForEscrow(address(escrow2), jid, 0, toDepositor, fee, 1);
+        uint256 postFeeAmount = AMOUNT - fee;
+        bytes memory sig2 = _signVerdictForEscrow(address(escrow2), jid, 0, postFeeAmount, 1);
 
-        escrow2.resolve(jid, 0, toDepositor, fee, 1, sig2);
+        escrow2.resolve(jid, 0, postFeeAmount, 1, sig2);
 
-        assertEq(srt.balanceOf(depositor), 1_000e6 - AMOUNT + toDepositor, "Depositor recovers funds minus fee");
-        assertEq(srt.balanceOf(arbitrator), fee, "Arbitrator gets fee");
+        assertEq(srt.balanceOf(depositor), 1_000e6 - AMOUNT + postFeeAmount, "Depositor recovers funds minus fee");
+        assertEq(srt.balanceOf(arbitrator), fee, "Arbitrator got fee at dispute time");
     }
 
     // ================================================================
@@ -492,21 +502,22 @@ contract GriefingDoSTest is Test {
         // Blacklist depositor after dispute
         srt.setRevertTarget(depositor);
 
+        // After dispute, fee already paid to arbitrator. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
 
-        // Verdict: 50/45/5 split. Transfer to depositor will revert.
+        // Verdict: 50/45 split. Transfer to depositor will revert.
         {
-            bytes memory sig = _signVerdictForEscrow(address(escrow2), jid, 50e6, AMOUNT - 50e6 - fee, fee, 1);
+            bytes memory sig = _signVerdictForEscrow(address(escrow2), jid, 50e6, postFeeAmount - 50e6, 1);
             vm.expectRevert("Transfer blocked");
-            escrow2.resolve(jid, 50e6, AMOUNT - 50e6 - fee, fee, 1, sig);
+            escrow2.resolve(jid, 50e6, postFeeAmount - 50e6, 1, sig);
         }
 
         // resolve() with toDepositor=0 succeeds
         {
-            uint256 toPayee2 = AMOUNT - fee;
-            bytes memory sig2 = _signVerdictForEscrow(address(escrow2), jid, toPayee2, 0, fee, 2);
-            escrow2.resolve(jid, toPayee2, 0, fee, 2, sig2);
-            assertEq(srt.balanceOf(payee), toPayee2, "Payee gets funds when depositor blacklisted");
+            bytes memory sig2 = _signVerdictForEscrow(address(escrow2), jid, postFeeAmount, 0, 2);
+            escrow2.resolve(jid, postFeeAmount, 0, 2, sig2);
+            assertEq(srt.balanceOf(payee), postFeeAmount, "Payee gets funds when depositor blacklisted");
         }
     }
 
@@ -604,13 +615,15 @@ contract GriefingDoSTest is Test {
             assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Disputed));
         }
 
-        // After 7 days, all auto-release to payee
+        // After 7 days, all auto-release to payee (post-fee amounts)
         vm.warp(block.timestamp + 7 days + 1);
         for (uint256 i = 0; i < numEscrows; i++) {
             bytes32 jid = keccak256(abi.encodePacked("mass-dispute-", i));
             escrow.forceRelease(jid);
         }
-        assertEq(usdc.balanceOf(payee), AMOUNT * numEscrows, "All funds released to payee");
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
+        assertEq(usdc.balanceOf(payee), postFeeAmount * numEscrows, "All post-fee funds released to payee");
     }
 
     // ================================================================
@@ -663,7 +676,8 @@ contract GriefingDoSTest is Test {
         vm.warp(block.timestamp + 7 days + 1);
         escrow.forceRelease(jid);
 
-        assertEq(usdc.balanceOf(address(badPayee)), AMOUNT, "Tokens received despite reverting fallback");
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(address(badPayee)), AMOUNT - fee, "Tokens received despite reverting fallback");
     }
 
     // ================================================================
@@ -697,13 +711,15 @@ contract GriefingDoSTest is Test {
         // Blacklist payee
         srt.setRevertTarget(badPayee);
 
+        // After dispute, fee already paid to arbitrator. e.amount = AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 postFeeAmount = AMOUNT - fee;
 
-        // Verdict: 50/45/5 split. But transfer to badPayee reverts.
+        // Verdict: 50/45 split. But transfer to badPayee reverts.
         {
-            bytes memory sig = _signVerdictForEscrow(address(escrow2), jid, 50e6, 45e6, fee, 1);
+            bytes memory sig = _signVerdictForEscrow(address(escrow2), jid, 50e6, postFeeAmount - 50e6, 1);
             vm.expectRevert("Transfer blocked");
-            escrow2.resolve(jid, 50e6, 45e6, fee, 1, sig);
+            escrow2.resolve(jid, 50e6, postFeeAmount - 50e6, 1, sig);
         }
 
         // forceRelease also blocked (sends to badPayee)
@@ -713,13 +729,12 @@ contract GriefingDoSTest is Test {
 
         // Only recovery: arbitrator signs toPayee=0 verdict
         {
-            uint256 toDepositor = AMOUNT - fee;
-            bytes memory sig = _signVerdictForEscrow(address(escrow2), jid, 0, toDepositor, fee, 2);
-            escrow2.resolve(jid, 0, toDepositor, fee, 2, sig);
+            bytes memory sig = _signVerdictForEscrow(address(escrow2), jid, 0, postFeeAmount, 2);
+            escrow2.resolve(jid, 0, postFeeAmount, 2, sig);
         }
 
-        assertEq(srt.balanceOf(depositor), 1_000e6 - AMOUNT + (AMOUNT - fee), "Depositor recovered minus arb fee");
-        assertEq(srt.balanceOf(arbitrator), fee, "Arbitrator still gets fee");
+        assertEq(srt.balanceOf(depositor), 1_000e6 - AMOUNT + postFeeAmount, "Depositor recovered minus arb fee");
+        assertEq(srt.balanceOf(arbitrator), fee, "Arbitrator got fee at dispute time");
         assertEq(srt.balanceOf(badPayee), 0, "Blacklisted payee gets nothing");
     }
 
@@ -772,7 +787,8 @@ contract GriefingDoSTest is Test {
         // After 7 days from dispute (not from completion), forceRelease works
         vm.warp(e.disputedAt + 7 days + 1);
         escrow.forceRelease(jobId);
-        assertEq(usdc.balanceOf(payee), AMOUNT);
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(payee), AMOUNT - fee);
     }
 
     // ================================================================
@@ -801,7 +817,8 @@ contract GriefingDoSTest is Test {
         // Total delay: 7 days from dispute (worst case if disputed immediately after completion)
         // vs. DISPUTE_WINDOW (72h) without dispute
         // Net grief: ~4 extra days of waiting
-        assertEq(usdc.balanceOf(payee), AMOUNT, "Payee eventually gets funds");
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        assertEq(usdc.balanceOf(payee), AMOUNT - fee, "Payee eventually gets post-fee funds");
     }
 
     // ================================================================

@@ -51,7 +51,6 @@ contract ReentrantOnTransferResolve is ERC20 {
     bytes public storedSig;
     uint256 public storedToPayee;
     uint256 public storedToDepositor;
-    uint256 public storedArbitratorFee;
     uint256 public storedNonce;
     bool public armed;
     uint256 public reentrancyAttempts;
@@ -65,7 +64,6 @@ contract ReentrantOnTransferResolve is ERC20 {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce,
         bytes calldata sig
     ) external {
@@ -73,7 +71,6 @@ contract ReentrantOnTransferResolve is ERC20 {
         attackJobId = _jobId;
         storedToPayee = toPayee;
         storedToDepositor = toDepositor;
-        storedArbitratorFee = arbitratorFee;
         storedNonce = nonce;
         storedSig = sig;
     }
@@ -88,7 +85,6 @@ contract ReentrantOnTransferResolve is ERC20 {
                 attackJobId,
                 storedToPayee,
                 storedToDepositor,
-                storedArbitratorFee,
                 storedNonce,
                 storedSig
             );
@@ -359,13 +355,12 @@ contract ReentrancyTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 digest = _hashTypedDataV4(structHash);
@@ -445,12 +440,12 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        // Prepare verdict
-        uint256 arbitratorFee = (AMOUNT * FEE_BPS) / 10000; // 5e6
-        uint256 toPayee = AMOUNT - arbitratorFee; // 95e6
+        // Prepare verdict — fee already deducted during dispute()
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
         uint256 toDepositor = 0;
         uint256 nonce = 1;
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, arbitratorFee, nonce);
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, nonce);
 
         // Arm: when resolve sends toPayee via transfer, the token re-enters resolve()
         token.setAttack(
@@ -458,7 +453,6 @@ contract ReentrancyTest is Test {
             jobId,
             toPayee,
             toDepositor,
-            arbitratorFee,
             nonce,
             sig
         );
@@ -467,11 +461,11 @@ contract ReentrancyTest is Test {
         // The reentrant call inside transfer reverts (nonReentrant), which propagates
         // through SafeERC20, reverting the entire outer resolve() too
         vm.expectRevert();
-        escrow.resolve(jobId, toPayee, toDepositor, arbitratorFee, nonce, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, sig);
 
         // Escrow should still be Disputed
-        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
-        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Disputed));
+        AgentEscrow.Escrow memory e2 = escrow.getEscrow(jobId);
+        assertEq(uint8(e2.state), uint8(AgentEscrow.EscrowState.Disputed));
     }
 
     // ================================================================
@@ -752,14 +746,14 @@ contract ReentrancyTest is Test {
         vm.prank(tokenAddr); // payee = token disputes
         escrow.dispute(jobId);
 
-        uint256 arbitratorFee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - arbitratorFee;
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
         uint256 nonce = 1;
-        bytes memory sig = _signVerdict(jobId, toPayee, 0, arbitratorFee, nonce);
+        bytes memory sig = _signVerdict(jobId, toPayee, 0, nonce);
 
         token.arm();
 
-        escrow.resolve(jobId, toPayee, 0, arbitratorFee, nonce, sig);
+        escrow.resolve(jobId, toPayee, 0, nonce, sig);
 
         assertTrue(token.stateWasCaptured(), "State should have been captured during resolve transfer");
         assertEq(

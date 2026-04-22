@@ -72,13 +72,12 @@ contract AgentEscrowTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 digest = _hashTypedDataV4(structHash);
@@ -140,13 +139,14 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        // Arbitrator splits: 70 payee, 25 depositor, 5 fee
+        // Fee paid at dispute time. Remaining amount split by verdict.
         uint256 fee = (AMOUNT * FEE_BPS) / 10000; // 5e6
+        uint256 remaining = AMOUNT - fee; // 95e6
         uint256 toPayee = 70e6;
-        uint256 toDepositor = AMOUNT - toPayee - fee; // 25e6
+        uint256 toDepositor = remaining - toPayee; // 25e6
 
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
         assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Resolved));
@@ -162,11 +162,11 @@ contract AgentEscrowTest is Test {
         escrow.dispute(jobId);
 
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
-        bytes memory sig = _signVerdict(jobId, toPayee, 0, fee, 1);
-        escrow.resolve(jobId, toPayee, 0, fee, 1, sig);
+        uint256 remaining = AMOUNT - fee;
+        bytes memory sig = _signVerdict(jobId, remaining, 0, 1);
+        escrow.resolve(jobId, remaining, 0, 1, sig);
 
-        assertEq(usdc.balanceOf(payee), toPayee);
+        assertEq(usdc.balanceOf(payee), remaining);
         assertEq(usdc.balanceOf(arbitrator), fee);
     }
 
@@ -176,11 +176,11 @@ contract AgentEscrowTest is Test {
         escrow.dispute(jobId);
 
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toDepositor = AMOUNT - fee;
-        bytes memory sig = _signVerdict(jobId, 0, toDepositor, fee, 1);
-        escrow.resolve(jobId, 0, toDepositor, fee, 1, sig);
+        uint256 remaining = AMOUNT - fee;
+        bytes memory sig = _signVerdict(jobId, 0, remaining, 1);
+        escrow.resolve(jobId, 0, remaining, 1, sig);
 
-        assertEq(usdc.balanceOf(depositor), 10_000e6 - AMOUNT + toDepositor);
+        assertEq(usdc.balanceOf(depositor), 10_000e6 - AMOUNT + remaining);
         assertEq(usdc.balanceOf(arbitrator), fee);
     }
 
@@ -193,13 +193,17 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
+        uint256 remaining = AMOUNT - fee;
+
         // Warp past 7-day arbitrator timeout
         vm.warp(block.timestamp + 7 days + 1);
         escrow.forceRelease(jobId);
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
         assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Released));
-        assertEq(usdc.balanceOf(payee), AMOUNT);
+        assertEq(usdc.balanceOf(payee), remaining);
+        assertEq(usdc.balanceOf(arbitrator), fee);
     }
 
     // ================================================================
@@ -433,15 +437,15 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
 
         // Sign with wrong key
         uint256 wrongPk = 0xBAD;
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                jobId, toPayee, 0, fee, 1
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                jobId, toPayee, 0, 1
             )
         );
         bytes32 digest = _hashTypedDataV4(structHash);
@@ -449,19 +453,7 @@ contract AgentEscrowTest is Test {
         bytes memory sig = abi.encodePacked(r, s, v);
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, 0, fee, 1, sig);
-    }
-
-    function test_resolve_reverts_wrong_fee() public {
-        _depositAndComplete();
-        vm.prank(depositor);
-        escrow.dispute(jobId);
-
-        uint256 wrongFee = 10e6;
-        uint256 toPayee = AMOUNT - wrongFee;
-        bytes memory sig = _signVerdict(jobId, toPayee, 0, wrongFee, 1);
-        vm.expectRevert("Fee mismatch");
-        escrow.resolve(jobId, toPayee, 0, wrongFee, 1, sig);
+        escrow.resolve(jobId, toPayee, 0, 1, sig);
     }
 
     function test_resolve_reverts_amounts_dont_sum() public {
@@ -469,10 +461,9 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        bytes memory sig = _signVerdict(jobId, 50e6, 50e6, fee, 1);
+        bytes memory sig = _signVerdict(jobId, 50e6, 50e6, 1);
         vm.expectRevert("Amounts don't sum");
-        escrow.resolve(jobId, 50e6, 50e6, fee, 1, sig);
+        escrow.resolve(jobId, 50e6, 50e6, 1, sig);
     }
 
     // ================================================================
@@ -616,15 +607,13 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
 
-        // Craft a garbage signature that ecrecover returns address(0) for
         bytes memory badSig = new bytes(65);
-        // All zeros => ecrecover returns address(0)
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, 0, fee, 1, badSig);
+        escrow.resolve(jobId, toPayee, 0, 1, badSig);
     }
 
     // Fix #2: reject high-s signatures (malleability)
@@ -633,27 +622,25 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
 
-        // Get valid signature
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                jobId, toPayee, 0, fee, 1
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                jobId, toPayee, 0, 1
             )
         );
         bytes32 digest = _hashTypedDataV4(structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(arbitratorPk, digest);
 
-        // Flip to high-s: s' = secp256k1n - s
         uint256 secp256k1n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
         bytes32 highS = bytes32(secp256k1n - uint256(s));
         uint8 flippedV = v == 27 ? 28 : 27;
         bytes memory malleableSig = abi.encodePacked(r, highS, flippedV);
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, 0, fee, 1, malleableSig);
+        escrow.resolve(jobId, toPayee, 0, 1, malleableSig);
     }
 
     // Fix #5: cannot overwrite active cancel proposal
@@ -765,14 +752,15 @@ contract AgentEscrowTest is Test {
         escrow.dispute(jobId);
 
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
 
-        bytes memory sig = _signVerdict(jobId, toPayee, 0, fee, 1);
-        escrow.resolve(jobId, toPayee, 0, fee, 1, sig);
+        bytes memory sig = _signVerdict(jobId, toPayee, 0, 1);
+        escrow.resolve(jobId, toPayee, 0, 1, sig);
 
         assertEq(usdc.balanceOf(payee), toPayee);
         assertEq(usdc.balanceOf(arbitrator), fee);
-        assertEq(usdc.balanceOf(depositor), 10_000e6 - AMOUNT); // depositor gets nothing back
+        assertEq(usdc.balanceOf(depositor), 10_000e6 - AMOUNT);
     }
 
     // Depositor+arbitrator collusion: max fee + rest to depositor, payee gets zero
@@ -785,10 +773,10 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jid);
 
-        uint256 fee = (AMOUNT * 5000) / 10000; // 50e6
-        uint256 toDepositor = AMOUNT - fee;     // 50e6
-        bytes memory sig = _signVerdict(jid, 0, toDepositor, fee, 1);
-        escrow.resolve(jid, 0, toDepositor, fee, 1, sig);
+        // 50% fee paid at dispute time. Remaining 50e6 to depositor.
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jid);
+        bytes memory sig = _signVerdict(jid, 0, e.amount, 1);
+        escrow.resolve(jid, 0, e.amount, 1, sig);
 
         assertEq(usdc.balanceOf(payee), 0);
         assertEq(usdc.balanceOf(arbitrator), 50e6);
@@ -800,10 +788,10 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
-        bytes memory sigA = _signVerdict(jobId, toPayee, 0, fee, 1);
-        escrow.resolve(jobId, toPayee, 0, fee, 1, sigA);
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        uint256 toPayee = e.amount;
+        bytes memory sigA = _signVerdict(jobId, toPayee, 0, 1);
+        escrow.resolve(jobId, toPayee, 0, 1, sigA);
 
         // Setup job B with same params
         bytes32 jobId2 = keccak256("job-002");
@@ -815,7 +803,7 @@ contract AgentEscrowTest is Test {
         escrow.dispute(jobId2);
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId2, toPayee, 0, fee, 1, sigA);
+        escrow.resolve(jobId2, toPayee, 0, 1, sigA);
     }
 
     // Race: dispute then release in same block — state machine blocks it
@@ -834,11 +822,10 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
-        bytes memory sig = _signVerdict(jobId, toPayee, 0, fee, 0);
-        escrow.resolve(jobId, toPayee, 0, fee, 0, sig);
-        assertEq(usdc.balanceOf(payee), toPayee);
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        bytes memory sig = _signVerdict(jobId, e.amount, 0, 0);
+        escrow.resolve(jobId, e.amount, 0, 0, sig);
+        assertEq(usdc.balanceOf(payee), e.amount);
     }
 
     // forceRelease at exact timeout boundary (>= means exactly at boundary succeeds)
@@ -848,9 +835,10 @@ contract AgentEscrowTest is Test {
         escrow.dispute(jobId);
         uint256 disputedAt = block.timestamp;
 
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
         vm.warp(disputedAt + 7 days);
         escrow.forceRelease(jobId);
-        assertEq(usdc.balanceOf(payee), AMOUNT);
+        assertEq(usdc.balanceOf(payee), e.amount);
     }
 
     // Grief: dispute at last second extends payee wait by full arbitrator timeout
@@ -874,18 +862,15 @@ contract AgentEscrowTest is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
-        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        // Sign two different splits with same nonce
-        bytes memory sig_pro_payee = _signVerdict(jobId, AMOUNT - fee, 0, fee, 42);
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        bytes memory sig_pro_payee = _signVerdict(jobId, e.amount, 0, 42);
 
-        // First verdict executes
-        escrow.resolve(jobId, AMOUNT - fee, 0, fee, 42, sig_pro_payee);
+        escrow.resolve(jobId, e.amount, 0, 42, sig_pro_payee);
 
-        // verdictHash is marked even though it didn't commit to the amounts
         assertTrue(escrow.verdictExecuted(keccak256(abi.encode(uint256(42), jobId))));
     }
 
-    // Fee rounds to dust with feeBps=1 — arbitrator gets $0.0001 for dispute work
+    // Fee rounds to dust with feeBps=1 — arbitrator gets $0.0001 at dispute time
     function test_attack_fee_dust_with_min_bps() public {
         bytes32 jid = keccak256("dust-fee-job");
         vm.prank(depositor);
@@ -896,9 +881,11 @@ contract AgentEscrowTest is Test {
         escrow.dispute(jid);
 
         uint256 fee = (1e6 * 1) / 10000; // = 100 = $0.0001
-        uint256 toPayee = 1e6 - fee;
-        bytes memory sig = _signVerdict(jid, toPayee, 0, fee, 1);
-        escrow.resolve(jid, toPayee, 0, fee, 1, sig);
+        assertEq(usdc.balanceOf(arbitrator), fee);
+
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jid);
+        bytes memory sig = _signVerdict(jid, e.amount, 0, 1);
+        escrow.resolve(jid, e.amount, 0, 1, sig);
         assertEq(usdc.balanceOf(arbitrator), 100);
     }
 

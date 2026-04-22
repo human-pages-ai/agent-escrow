@@ -122,15 +122,16 @@ contract EscrowHandler is Test {
         escrow.dispute(jobId);
 
         // Resolve: arbitrator signs verdict
-        uint256 arbFee = (e.amount * e.arbitratorFeeBps) / 10000;
-        uint256 remainder = e.amount - arbFee;
-        uint256 toPayee = remainder / 2;
-        uint256 toDepositor = remainder - toPayee;
+        // After dispute, fee already paid. e.amount is now reduced.
+        AgentEscrow.Escrow memory ePost = escrow.getEscrow(jobId);
+        uint256 postFeeAmount = ePost.amount;
+        uint256 toPayee = postFeeAmount / 2;
+        uint256 toDepositor = postFeeAmount - toPayee;
 
         _nonce++;
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, arbFee, _nonce);
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, _nonce);
 
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, _nonce, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, _nonce, sig);
 
         isFunded[jobId] = false;
         totalFundsHeld -= e.amount;
@@ -140,13 +141,12 @@ contract EscrowHandler is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 domainSeparator = keccak256(
@@ -241,12 +241,13 @@ contract StateMachineTest is Test {
     }
 
     function _resolve() internal {
+        // After dispute, fee already paid. e.amount = AMOUNT - fee
         uint256 arbFee = (AMOUNT * FEE_BPS) / 10000; // 5 USDC
-        uint256 remainder = AMOUNT - arbFee;
-        uint256 toPayee = remainder / 2;
-        uint256 toDepositor = remainder - toPayee;
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, arbFee, 1);
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        uint256 postFeeAmount = AMOUNT - arbFee;
+        uint256 toPayee = postFeeAmount / 2;
+        uint256 toDepositor = postFeeAmount - toPayee;
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
     }
 
     function _cancel() internal {
@@ -278,13 +279,12 @@ contract StateMachineTest is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbitratorFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 domainSeparator = keccak256(
@@ -488,37 +488,37 @@ contract StateMachineTest is Test {
 
     function test_sm_resolve_from_empty_reverts() public {
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_sm_resolve_from_funded_reverts() public {
         _toState(AgentEscrow.EscrowState.Funded);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_sm_resolve_from_completed_reverts() public {
         _toState(AgentEscrow.EscrowState.Completed);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_sm_resolve_from_released_reverts() public {
         _toState(AgentEscrow.EscrowState.Released);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_sm_resolve_from_cancelled_reverts() public {
         _toState(AgentEscrow.EscrowState.Cancelled);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_sm_resolve_from_resolved_reverts() public {
         _toState(AgentEscrow.EscrowState.Resolved);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     // ---- forceRelease (requires Disputed) ----
@@ -709,13 +709,14 @@ contract StateMachineTest is Test {
             vm.prank(depositor);
             escrow.dispute(fuzzJobId);
 
-            uint256 arbFee = (amount * feeBps) / 10000;
-            uint256 remainder = amount - arbFee;
-            uint256 toPayee = remainder / 2;
-            uint256 toDepositor = remainder - toPayee;
+            // After dispute, fee already paid. Get the post-fee amount.
+            AgentEscrow.Escrow memory ePost = escrow.getEscrow(fuzzJobId);
+            uint256 postFeeAmount = ePost.amount;
+            uint256 toPayee = postFeeAmount / 2;
+            uint256 toDepositor = postFeeAmount - toPayee;
 
-            bytes memory sig = _signVerdict(fuzzJobId, toPayee, toDepositor, arbFee, 1);
-            escrow.resolve(fuzzJobId, toPayee, toDepositor, arbFee, 1, sig);
+            bytes memory sig = _signVerdict(fuzzJobId, toPayee, toDepositor, 1);
+            escrow.resolve(fuzzJobId, toPayee, toDepositor, 1, sig);
 
             assertEq(
                 usdc.balanceOf(address(escrow)),
@@ -762,7 +763,7 @@ contract StateMachineTest is Test {
     function test_final_released_resolve_reverts() public {
         _toState(AgentEscrow.EscrowState.Released);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_final_released_forceRelease_reverts() public {
@@ -818,7 +819,7 @@ contract StateMachineTest is Test {
     function test_final_cancelled_resolve_reverts() public {
         _toState(AgentEscrow.EscrowState.Cancelled);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 1, dummySig);
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
     function test_final_cancelled_forceRelease_reverts() public {
@@ -874,7 +875,7 @@ contract StateMachineTest is Test {
     function test_final_resolved_resolve_reverts() public {
         _toState(AgentEscrow.EscrowState.Resolved);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, 0, 0, 0, 2, dummySig);
+        escrow.resolve(jobId, 0, 0, 2, dummySig);
     }
 
     function test_final_resolved_forceRelease_reverts() public {

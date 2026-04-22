@@ -31,7 +31,7 @@ contract SignatureAttacks is Test {
     uint256 public constant FEE_BPS = 500; // 5%
 
     bytes32 private constant VERDICT_TYPEHASH =
-        keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)");
+        keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)");
 
     // Secp256k1 curve order
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
@@ -75,11 +75,10 @@ contract SignatureAttacks is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbitratorFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, _jobId, toPayee, toDepositor, arbitratorFee, nonce)
+            abi.encode(VERDICT_TYPEHASH, _jobId, toPayee, toDepositor, nonce)
         );
         bytes32 digest = _hashTypedDataV4(_escrow, structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(arbitratorPk, digest);
@@ -120,10 +119,10 @@ contract SignatureAttacks is Test {
         return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
     }
 
-    function _defaultSplit() internal pure returns (uint256 toPayee, uint256 toDepositor, uint256 arbFee) {
-        // 5% fee on 100e6 = 5e6
-        arbFee = (AMOUNT * FEE_BPS) / 10000;
-        toPayee = AMOUNT - arbFee;
+    function _defaultSplit() internal pure returns (uint256 toPayee, uint256 toDepositor) {
+        // Fee is paid at dispute() time, so post-dispute amount = AMOUNT - fee
+        uint256 postFeeAmount = AMOUNT - (AMOUNT * FEE_BPS) / 10000;
+        toPayee = postFeeAmount;
         toDepositor = 0;
     }
 
@@ -135,11 +134,11 @@ contract SignatureAttacks is Test {
     function test_sig_replayAcrossChains() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // Sign with a different chainId (pretend chain 1)
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, arbFee, uint256(1))
+            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, uint256(1))
         );
         bytes32 wrongChainDigest = _customDomainDigest(
             "AgentEscrow", "2", 1, address(escrow), structHash
@@ -149,7 +148,7 @@ contract SignatureAttacks is Test {
 
         // Submit on chain 31337 — signer won't recover to arbitrator
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
     }
 
     // ================================================================
@@ -162,14 +161,14 @@ contract SignatureAttacks is Test {
         _depositCompleteDispute(escrow, jobId);
         _depositCompleteDispute(escrow2, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // Sign for escrow1
-        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, arbFee, 1);
+        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, 1);
 
         // Try on escrow2 — different verifyingContract in domain
         vm.expectRevert("Invalid arbitrator signature");
-        escrow2.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        escrow2.resolve(jobId, toPayee, toDepositor, 1, sig);
     }
 
     // ================================================================
@@ -181,14 +180,14 @@ contract SignatureAttacks is Test {
         _depositCompleteDispute(escrow, jobId);
         _depositCompleteDispute(escrow, jobId2);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // Sign for jobId
-        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, arbFee, 1);
+        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, 1);
 
         // Try to use on jobId2 — struct hash includes jobId, so signer won't match
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId2, toPayee, toDepositor, arbFee, 1, sig);
+        escrow.resolve(jobId2, toPayee, toDepositor, 1, sig);
     }
 
     // ================================================================
@@ -199,26 +198,27 @@ contract SignatureAttacks is Test {
     function test_sig_sameJobDifferentSplitReplay() public {
         _depositCompleteDispute(escrow, jobId);
 
-        uint256 arbFee = (AMOUNT * FEE_BPS) / 10000;
+        // Fee is paid at dispute() time; post-fee amount is what's available
+        uint256 postFeeAmount = AMOUNT - (AMOUNT * FEE_BPS) / 10000;
 
-        // Verdict 1: all to payee (minus arb fee)
-        uint256 toPayee1 = AMOUNT - arbFee;
+        // Verdict 1: all to payee
+        uint256 toPayee1 = postFeeAmount;
         uint256 toDepositor1 = 0;
-        bytes memory sig1 = _signVerdict(escrow, jobId, toPayee1, toDepositor1, arbFee, 1);
+        bytes memory sig1 = _signVerdict(escrow, jobId, toPayee1, toDepositor1, 1);
 
         // Verdict 2: split evenly (signed with same nonce but different amounts)
-        uint256 toPayee2 = (AMOUNT - arbFee) / 2;
-        uint256 toDepositor2 = AMOUNT - arbFee - toPayee2;
-        bytes memory sig2 = _signVerdict(escrow, jobId, toPayee2, toDepositor2, arbFee, 1);
+        uint256 toPayee2 = postFeeAmount / 2;
+        uint256 toDepositor2 = postFeeAmount - toPayee2;
+        bytes memory sig2 = _signVerdict(escrow, jobId, toPayee2, toDepositor2, 1);
 
         // Execute first verdict — should succeed
-        escrow.resolve(jobId, toPayee1, toDepositor1, arbFee, 1, sig1);
+        escrow.resolve(jobId, toPayee1, toDepositor1, 1, sig1);
 
         // Try second verdict — state is now Resolved, so it hits "Not disputed" first.
         // Even if the state check didn't exist, the nonce guard would catch it.
         // Either way, the second signature cannot execute.
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, toPayee2, toDepositor2, arbFee, 1, sig2);
+        escrow.resolve(jobId, toPayee2, toDepositor2, 1, sig2);
     }
 
     // ================================================================
@@ -229,10 +229,10 @@ contract SignatureAttacks is Test {
     function test_sig_nonceReuseAfterResolution() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
-        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, arbFee, 1);
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
+        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, 1);
 
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         // Try to deposit again with the same jobId — state is Resolved, not Empty
         vm.prank(depositor);
@@ -248,10 +248,10 @@ contract SignatureAttacks is Test {
     function test_sig_malleableHighS() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, arbFee, uint256(1))
+            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, uint256(1))
         );
         bytes32 digest = _hashTypedDataV4(escrow, structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(arbitratorPk, digest);
@@ -265,7 +265,7 @@ contract SignatureAttacks is Test {
 
         // The contract checks s <= half-order, so this must revert
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, malleableSig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, malleableSig);
     }
 
     // ================================================================
@@ -276,7 +276,7 @@ contract SignatureAttacks is Test {
     function test_sig_zeroAddressRecovery() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // Construct a signature that causes ecrecover to return address(0):
         // r=0, s=0, v=27 will cause ecrecover to return 0x0
@@ -292,7 +292,7 @@ contract SignatureAttacks is Test {
         (bool success, ) = address(escrow).call(
             abi.encodeWithSelector(
                 escrow.resolve.selector,
-                jobId, toPayee, toDepositor, arbFee, uint256(1), garbageSig
+                jobId, toPayee, toDepositor, uint256(1), garbageSig
             )
         );
         assertFalse(success, "Garbage signature must not succeed");
@@ -305,10 +305,10 @@ contract SignatureAttacks is Test {
     function test_sig_wrongEIP712Version() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, arbFee, uint256(1))
+            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, uint256(1))
         );
 
         // Build digest with version "1" instead of "2"
@@ -319,7 +319,7 @@ contract SignatureAttacks is Test {
         bytes memory sig = abi.encodePacked(r, s, v);
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
     }
 
     // ================================================================
@@ -329,10 +329,10 @@ contract SignatureAttacks is Test {
     function test_sig_wrongEIP712Name() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, arbFee, uint256(1))
+            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, uint256(1))
         );
 
         bytes32 wrongDigest = _customDomainDigest(
@@ -342,7 +342,7 @@ contract SignatureAttacks is Test {
         bytes memory sig = abi.encodePacked(r, s, v);
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
     }
 
     // ================================================================
@@ -352,7 +352,7 @@ contract SignatureAttacks is Test {
     function test_sig_truncated() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // 64 bytes — missing v byte
         bytes memory truncated = new bytes(64);
@@ -361,7 +361,7 @@ contract SignatureAttacks is Test {
         }
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, truncated);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, truncated);
     }
 
     // ================================================================
@@ -370,12 +370,12 @@ contract SignatureAttacks is Test {
     function test_sig_empty() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         bytes memory empty = new bytes(0);
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, empty);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, empty);
     }
 
     // ================================================================
@@ -385,7 +385,7 @@ contract SignatureAttacks is Test {
     function test_sig_oversized() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // 66 bytes
         bytes memory oversized = new bytes(66);
@@ -394,7 +394,7 @@ contract SignatureAttacks is Test {
         }
 
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, oversized);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, oversized);
     }
 
     // ================================================================
@@ -406,11 +406,11 @@ contract SignatureAttacks is Test {
     function test_sig_vZeroAndOne() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
 
         // Get a valid signature first
         bytes32 structHash = keccak256(
-            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, arbFee, uint256(1))
+            abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, uint256(1))
         );
         bytes32 digest = _hashTypedDataV4(escrow, structHash);
         (, bytes32 r, bytes32 s) = vm.sign(arbitratorPk, digest);
@@ -420,7 +420,7 @@ contract SignatureAttacks is Test {
         (bool success0, ) = address(escrow).call(
             abi.encodeWithSelector(
                 escrow.resolve.selector,
-                jobId, toPayee, toDepositor, arbFee, uint256(1), sigV0
+                jobId, toPayee, toDepositor, uint256(1), sigV0
             )
         );
         assertFalse(success0, "v=0 signature must not succeed");
@@ -430,7 +430,7 @@ contract SignatureAttacks is Test {
         (bool success1, ) = address(escrow).call(
             abi.encodeWithSelector(
                 escrow.resolve.selector,
-                jobId, toPayee, toDepositor, arbFee, uint256(1), sigV1
+                jobId, toPayee, toDepositor, uint256(1), sigV1
             )
         );
         assertFalse(success1, "v=1 signature must not succeed");
@@ -444,14 +444,17 @@ contract SignatureAttacks is Test {
     function test_sig_validSignatureSucceeds() public {
         _depositCompleteDispute(escrow, jobId);
 
-        (uint256 toPayee, uint256 toDepositor, uint256 arbFee) = _defaultSplit();
-        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, arbFee, 1);
+        (uint256 toPayee, uint256 toDepositor) = _defaultSplit();
+        bytes memory sig = _signVerdict(escrow, jobId, toPayee, toDepositor, 1);
 
-        escrow.resolve(jobId, toPayee, toDepositor, arbFee, 1, sig);
+        uint256 arbFee = (AMOUNT * FEE_BPS) / 10000;
+
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
         assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Resolved));
         assertEq(usdc.balanceOf(payee), toPayee);
+        // Fee was paid to arbitrator at dispute() time, not resolve() time
         assertEq(usdc.balanceOf(arbitrator), arbFee);
     }
 }

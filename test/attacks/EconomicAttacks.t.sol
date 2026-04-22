@@ -84,13 +84,12 @@ contract EconomicAttacks is Test {
         bytes32 _jobId,
         uint256 toPayee,
         uint256 toDepositor,
-        uint256 arbFee,
         uint256 nonce
     ) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(
             abi.encode(
-                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 arbitratorFee,uint256 nonce)"),
-                _jobId, toPayee, toDepositor, arbFee, nonce
+                keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)"),
+                _jobId, toPayee, toDepositor, nonce
             )
         );
         bytes32 digest = _hashTypedDataV4(structHash);
@@ -195,10 +194,12 @@ contract EconomicAttacks is Test {
         escrow.dispute(jobId);
 
         // Arbitrator signs verdict: 90% to payee (unfavorable for depositor)
+        // Fee was already deducted at dispute() time, so escrow amount is now AMOUNT - fee
         uint256 fee = (AMOUNT * FEE_BPS) / 10000; // 5e6
+        uint256 postFeeAmount = AMOUNT - fee; // 95e6
         uint256 toPayee = 90e6;
-        uint256 toDepositor = AMOUNT - toPayee - fee; // 5e6
-        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, fee, 1);
+        uint256 toDepositor = postFeeAmount - toPayee; // 5e6
+        bytes memory sig = _signVerdict(jobId, toPayee, toDepositor, 1);
 
         // Depositor sees this tx in mempool. Can they do anything?
         // They can't re-dispute (already disputed), can't cancel (state is Disputed),
@@ -217,7 +218,7 @@ contract EconomicAttacks is Test {
         // The resolve goes through
         uint256 payeeBalBefore = usdc.balanceOf(payee);
         uint256 depositorBalBefore = usdc.balanceOf(depositor);
-        escrow.resolve(jobId, toPayee, toDepositor, fee, 1, sig);
+        escrow.resolve(jobId, toPayee, toDepositor, 1, sig);
 
         // FINDING: No escape from unfavorable verdict. This is correct behavior.
         assertEq(usdc.balanceOf(payee), payeeBalBefore + toPayee);
@@ -291,14 +292,17 @@ contract EconomicAttacks is Test {
         vm.prank(relayer);
         escrow.markComplete(tinyJobId);
 
+        // Fee is paid at dispute() time, arbitrator receives fee immediately
+        uint256 arbBalBefore = usdc.balanceOf(arbitrator);
         vm.prank(depositor);
         escrow.dispute(tinyJobId);
+        assertEq(usdc.balanceOf(arbitrator), arbBalBefore + arbFee); // $0.0001
 
-        uint256 toPayee = minDeposit - arbFee; // 999900
-        bytes memory sig = _signVerdict(tinyJobId, toPayee, 0, arbFee, 1);
-        escrow.resolve(tinyJobId, toPayee, 0, arbFee, 1, sig);
-
-        assertEq(usdc.balanceOf(arbitrator), arbFee); // $0.0001
+        // Post-fee amount available for resolution
+        uint256 postFeeAmount = minDeposit - arbFee; // 999900
+        uint256 toPayee = postFeeAmount;
+        bytes memory sig = _signVerdict(tinyJobId, toPayee, 0, 1);
+        escrow.resolve(tinyJobId, toPayee, 0, 1, sig);
     }
 
     /// @notice Maximum extraction: arbitrator + depositor collude at max feeBps
@@ -314,17 +318,21 @@ contract EconomicAttacks is Test {
         vm.prank(relayer);
         escrow.markComplete(colludeJobId);
 
-        // Depositor disputes immediately
+        // Depositor disputes immediately — fee is paid to arbitrator at dispute time
+        uint256 arbFee = (collusionAmount * maxFeeBps) / 10000; // 500e6 = $500
         vm.prank(depositor);
         escrow.dispute(colludeJobId);
 
-        // Arbitrator signs verdict: 0 to payee, max to depositor + arbitrator
-        uint256 arbFee = (collusionAmount * maxFeeBps) / 10000; // 500e6 = $500
-        uint256 toDepositor = collusionAmount - arbFee; // 500e6 = $500
+        // Arbitrator already received $500 fee at dispute time
+        assertEq(usdc.balanceOf(arbitrator), arbFee); // $500
+
+        // Arbitrator signs verdict: 0 to payee, all remaining to depositor
+        uint256 postFeeAmount = collusionAmount - arbFee; // 500e6 = $500
+        uint256 toDepositor = postFeeAmount; // 500e6 = $500
         uint256 toPayee = 0;
 
-        bytes memory sig = _signVerdict(colludeJobId, toPayee, toDepositor, arbFee, 1);
-        escrow.resolve(colludeJobId, toPayee, toDepositor, arbFee, 1, sig);
+        bytes memory sig = _signVerdict(colludeJobId, toPayee, toDepositor, 1);
+        escrow.resolve(colludeJobId, toPayee, toDepositor, 1, sig);
 
         // FINDING: Depositor gets $500 back, arbitrator gets $500.
         // Payee gets $0 for their work. If depositor and arbitrator are the same entity
@@ -332,7 +340,6 @@ contract EconomicAttacks is Test {
         // Mitigation: payee should vet the arbitrator before accepting the job.
         // Payee balance unchanged (started with 10_000e6, got nothing)
         assertEq(usdc.balanceOf(payee), 10_000e6);
-        assertEq(usdc.balanceOf(arbitrator), arbFee); // $500
         // depositor: 10000 - 1000 + 500 = 9500
         assertEq(usdc.balanceOf(depositor), 10_000e6 - collusionAmount + toDepositor);
     }
@@ -488,11 +495,13 @@ contract EconomicAttacks is Test {
         escrow.forceRelease(jobId);
 
         // At exactly timeout: forceRelease works (uses >=)
+        // Fee was already paid at dispute() time, so payee gets AMOUNT - fee
+        uint256 fee = (AMOUNT * FEE_BPS) / 10000;
         uint256 payeeBalBefore2 = usdc.balanceOf(payee);
         vm.warp(timeout);
         escrow.forceRelease(jobId);
 
-        assertEq(usdc.balanceOf(payee), payeeBalBefore2 + AMOUNT);
+        assertEq(usdc.balanceOf(payee), payeeBalBefore2 + AMOUNT - fee);
 
         // FINDING: forceRelease uses >=. At the exact boundary, it succeeds.
         // A miner can delay forceRelease by 1 second by manipulating block.timestamp,
@@ -553,14 +562,16 @@ contract EconomicAttacks is Test {
         vm.prank(depositor);
         escrow.release(job2);
 
-        // Resolve job1
+        // Resolve job1 — fee was already paid at dispute() time
         uint256 fee1 = (50e6 * FEE_BPS) / 10000;
-        uint256 toPayee1 = 50e6 - fee1;
-        bytes memory sig1 = _signVerdict(job1, toPayee1, 0, fee1, 1);
-        escrow.resolve(job1, toPayee1, 0, fee1, 1, sig1);
+        uint256 postFeeAmount1 = 50e6 - fee1;
+        uint256 toPayee1 = postFeeAmount1;
+        bytes memory sig1 = _signVerdict(job1, toPayee1, 0, 1);
+        escrow.resolve(job1, toPayee1, 0, 1, sig1);
 
         // Verify final balances: payee started with 10_000e6, got 200e6 (job2) + (50e6 - fee) from job1
         assertEq(usdc.balanceOf(payee), 10_000e6 + 200e6 + toPayee1);
+        // Arbitrator received fee at dispute() time
         assertEq(usdc.balanceOf(arbitrator), fee1);
 
         // FINDING: Escrows are fully isolated. Different jobIds = different storage slots.
@@ -585,20 +596,21 @@ contract EconomicAttacks is Test {
         vm.prank(depositor);
         escrow.dispute(job2);
 
-        // Resolve job1 with nonce=1
+        // Resolve job1 with nonce=1 — fee was already paid at dispute() time
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
-        bytes memory sig1 = _signVerdict(job1, toPayee, 0, fee, 1);
-        escrow.resolve(job1, toPayee, 0, fee, 1, sig1);
+        uint256 postFeeAmount = AMOUNT - fee;
+        uint256 toPayee = postFeeAmount;
+        bytes memory sig1 = _signVerdict(job1, toPayee, 0, 1);
+        escrow.resolve(job1, toPayee, 0, 1, sig1);
 
         // Try to replay job1's signature on job2 — different jobId in structHash
         // so the signature won't match
         vm.expectRevert("Invalid arbitrator signature");
-        escrow.resolve(job2, toPayee, 0, fee, 1, sig1);
+        escrow.resolve(job2, toPayee, 0, 1, sig1);
 
         // Need a fresh signature for job2
-        bytes memory sig2 = _signVerdict(job2, toPayee, 0, fee, 1);
-        escrow.resolve(job2, toPayee, 0, fee, 1, sig2);
+        bytes memory sig2 = _signVerdict(job2, toPayee, 0, 1);
+        escrow.resolve(job2, toPayee, 0, 1, sig2);
 
         // FINDING: Verdict signatures are bound to jobId. Cross-escrow replay is impossible.
         assertEq(uint8(escrow.getEscrow(job1).state), uint8(AgentEscrow.EscrowState.Resolved));
@@ -617,15 +629,17 @@ contract EconomicAttacks is Test {
         vm.prank(depositor);
         escrow.dispute(jobId);
 
+        // Fee was already paid at dispute() time
         uint256 fee = (AMOUNT * FEE_BPS) / 10000;
-        uint256 toPayee = AMOUNT - fee;
-        bytes memory sig = _signVerdict(jobId, toPayee, 0, fee, 1);
-        escrow.resolve(jobId, toPayee, 0, fee, 1, sig);
+        uint256 postFeeAmount = AMOUNT - fee;
+        uint256 toPayee = postFeeAmount;
+        bytes memory sig = _signVerdict(jobId, toPayee, 0, 1);
+        escrow.resolve(jobId, toPayee, 0, 1, sig);
 
         // Try to resolve again — state is Resolved, not Disputed
-        bytes memory sig2 = _signVerdict(jobId, toPayee, 0, fee, 2);
+        bytes memory sig2 = _signVerdict(jobId, toPayee, 0, 2);
         vm.expectRevert("Not disputed");
-        escrow.resolve(jobId, toPayee, 0, fee, 2, sig2);
+        escrow.resolve(jobId, toPayee, 0, 2, sig2);
 
         // FINDING: Double-resolve is blocked by state check, not just nonce check.
         // Both mechanisms provide defense-in-depth.
