@@ -857,8 +857,8 @@ contract AgentEscrowTest is Test {
         assertGt(forceReleaseAt, completedAt + DISPUTE_WINDOW + 6 days);
     }
 
-    // verdictHash doesn't bind to amounts — two verdicts same nonce, first wins
-    function test_attack_verdict_hash_amount_independence() public {
+    // verdictHash binds to amounts — prevents replay with different split
+    function test_attack_verdict_hash_includes_amounts() public {
         _depositAndComplete();
         vm.prank(depositor);
         escrow.dispute(jobId);
@@ -868,7 +868,7 @@ contract AgentEscrowTest is Test {
 
         escrow.resolve(jobId, e.amount, 0, 42, sig_pro_payee);
 
-        assertTrue(escrow.verdictExecuted(keccak256(abi.encode(uint256(42), jobId))));
+        assertTrue(escrow.verdictExecuted(keccak256(abi.encode(uint256(42), jobId, e.amount, uint256(0)))));
     }
 
     // Fee rounds to dust with feeBps=1 — arbitrator gets $0.0001 at dispute time
@@ -1033,9 +1033,9 @@ contract AgentEscrowTest is Test {
         _deposit();
         uint256 balanceBefore = usdc.balanceOf(depositor);
 
-        // Warp past fundingDeadline
+        // Warp past completionDeadline
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
-        vm.warp(e.fundingDeadline + 1);
+        vm.warp(e.completionDeadline + 1);
 
         vm.prank(depositor);
         escrow.claimFundingTimeout(jobId);
@@ -1058,7 +1058,7 @@ contract AgentEscrowTest is Test {
         _deposit();
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
-        vm.warp(e.fundingDeadline + 1);
+        vm.warp(e.completionDeadline + 1);
 
         vm.prank(payee);
         vm.expectRevert("Only depositor");
@@ -1079,13 +1079,13 @@ contract AgentEscrowTest is Test {
     function test_extendFunding_extends_by_30_days() public {
         _deposit();
         AgentEscrow.Escrow memory before_ = escrow.getEscrow(jobId);
-        uint256 originalDeadline = before_.fundingDeadline;
+        uint256 originalDeadline = before_.completionDeadline;
 
         vm.prank(depositor);
         escrow.extendFunding(jobId);
 
         AgentEscrow.Escrow memory after_ = escrow.getEscrow(jobId);
-        assertEq(after_.fundingDeadline, originalDeadline + 30 days);
+        assertEq(after_.completionDeadline, originalDeadline + 30 days);
     }
 
     function test_extendFunding_reverts_at_hard_cap() public {

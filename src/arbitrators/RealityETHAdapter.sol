@@ -141,15 +141,6 @@ contract RealityETHAdapter is IERC1271, IArbitratorStatus {
         bytes32 structHash = keccak256(
             abi.encode(VERDICT_TYPEHASH, jobId, toPayee, toDepositor, nonce)
         );
-        bytes32 domainSeparator = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256("AgentEscrow"),
-                keccak256("2"),
-                block.chainid,
-                address(escrow)
-            )
-        );
-        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        return keccak256(abi.encodePacked("\x19\x01", escrow.domainSeparator(), structHash));
     }
 }

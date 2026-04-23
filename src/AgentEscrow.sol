@@ -43,7 +43,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         uint256 completedAt;
         uint32 disputeWindow;
         uint256 disputedAt;
-        uint256 fundingDeadline;
+        uint256 completionDeadline;
     }
 
     struct CancelProposal {
@@ -82,7 +82,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     event CancelAccepted(bytes32 indexed jobId);
     event ForceReleased(bytes32 indexed jobId, address indexed payee, uint256 amount);
     event FundingExtended(bytes32 indexed jobId, uint256 newDeadline);
-    event FundingTimedOut(bytes32 indexed jobId, address indexed depositor, uint256 amount);
+    event CompletionTimedOut(bytes32 indexed jobId, address indexed depositor, uint256 amount);
 
     // ======================== CONSTRUCTOR ========================
     constructor(address _token) EIP712("AgentEscrow", "2") {
@@ -123,7 +123,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
             completedAt: 0,
             disputeWindow: disputeWindow,
             disputedAt: 0,
-            fundingDeadline: block.timestamp + fundingWindow
+            completionDeadline: block.timestamp + fundingWindow
         });
 
         token.safeTransferFrom(msg.sender, address(this), amount);
@@ -198,7 +198,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         Escrow storage e = escrows[jobId];
         require(e.state == EscrowState.Disputed, "Not disputed");
 
-        bytes32 verdictHash = keccak256(abi.encode(nonce, jobId));
+        bytes32 verdictHash = keccak256(abi.encode(nonce, jobId, toPayee, toDepositor));
         require(!verdictExecuted[verdictHash], "Verdict already executed");
 
         require(toPayee + toDepositor == e.amount, "Amounts don't sum");
@@ -298,11 +298,11 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         require(e.state == EscrowState.Funded, "Not funded");
         require(msg.sender == e.depositor, "Only depositor");
 
-        uint256 newDeadline = e.fundingDeadline + FUNDING_EXTENSION;
+        uint256 newDeadline = e.completionDeadline + FUNDING_EXTENSION;
         uint256 hardCap = e.fundedAt + MAX_FUNDING_DURATION;
         require(newDeadline <= hardCap, "Exceeds max funding duration");
 
-        e.fundingDeadline = newDeadline;
+        e.completionDeadline = newDeadline;
 
         emit FundingExtended(jobId, newDeadline);
     }
@@ -311,12 +311,12 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         Escrow storage e = escrows[jobId];
         require(e.state == EscrowState.Funded, "Not funded");
         require(msg.sender == e.depositor, "Only depositor");
-        require(block.timestamp >= e.fundingDeadline, "Funding not expired");
+        require(block.timestamp >= e.completionDeadline, "Funding not expired");
 
         e.state = EscrowState.Cancelled;
         token.safeTransfer(e.depositor, e.amount);
 
-        emit FundingTimedOut(jobId, e.depositor, e.amount);
+        emit CompletionTimedOut(jobId, e.depositor, e.amount);
     }
 
     // ======================== ADMIN (pause only) ========================
@@ -345,9 +345,13 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         return e.disputedAt + ARBITRATOR_TIMEOUT;
     }
 
-    function getFundingDeadline(bytes32 jobId) external view returns (uint256) {
+    function getCompletionDeadline(bytes32 jobId) external view returns (uint256) {
         Escrow memory e = escrows[jobId];
-        return e.fundingDeadline;
+        return e.completionDeadline;
+    }
+
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
     }
 
 }
