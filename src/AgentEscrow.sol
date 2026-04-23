@@ -26,11 +26,14 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     uint256 public constant MAX_ARBITRATOR_FEE_BPS = 5000;  // 50% structural cap
     uint256 public constant MAX_FUNDING_DURATION = 180 days;
     uint256 public constant FUNDING_EXTENSION = 30 days;
+    uint32 public constant MIN_OFFER_WINDOW = 1 hours;
+    uint32 public constant MAX_OFFER_WINDOW = 7 days;
+    uint32 public constant DEFAULT_OFFER_WINDOW = 12 hours;
 
     // ======================== STORAGE ========================
     IERC20 public immutable token; // USDC
 
-    enum EscrowState { Empty, Funded, Completed, Released, Cancelled, Disputed, Resolved }
+    enum EscrowState { Empty, Offered, Funded, Completed, Released, Cancelled, Disputed, Resolved }
 
     struct Escrow {
         address depositor;
@@ -39,9 +42,11 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         uint256 amount;
         uint256 arbitratorFeeBps;
         EscrowState state;
+        uint256 offerDeadline;
         uint256 fundedAt;
         uint256 completedAt;
         uint32 disputeWindow;
+        uint32 fundingWindow;
         uint256 disputedAt;
         uint256 completionDeadline;
     }
@@ -60,15 +65,18 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)");
 
     // ======================== EVENTS ========================
-    event Deposited(
+    event Offered(
         bytes32 indexed jobId,
         address indexed depositor,
         address indexed payee,
         uint256 amount,
         address arbitrator,
         uint256 arbitratorFeeBps,
-        uint32 disputeWindow
+        uint32 disputeWindow,
+        uint256 offerDeadline
     );
+    event Activated(bytes32 indexed jobId, address activatedBy);
+    event OfferWithdrawn(bytes32 indexed jobId, address indexed depositor, uint256 amount);
     event Completed(bytes32 indexed jobId, uint256 disputeDeadline);
     event Released(bytes32 indexed jobId, address indexed payee, uint256 amount, address releasedBy);
     event Disputed(bytes32 indexed jobId, address disputedBy, uint256 arbitratorFee);
@@ -99,7 +107,8 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         uint32 disputeWindow,
         uint32 fundingWindow,
         uint256 amount,
-        uint256 feeBps
+        uint256 feeBps,
+        uint32 offerWindow
     ) external whenNotPaused nonReentrant {
         require(escrows[jobId].state == EscrowState.Empty, "Escrow exists");
         require(payee != address(0), "Invalid payee");
@@ -111,24 +120,56 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         require(disputeWindow >= 3 days && disputeWindow <= 30 days, "Invalid dispute window");
         require(fundingWindow >= 7 days && fundingWindow <= 90 days, "Invalid funding window");
         require(feeBps > 0 && feeBps <= MAX_ARBITRATOR_FEE_BPS, "Fee out of range");
+        require(offerWindow >= MIN_OFFER_WINDOW && offerWindow <= MAX_OFFER_WINDOW, "Invalid offer window");
 
+        uint256 deadline = block.timestamp + offerWindow;
         escrows[jobId] = Escrow({
             depositor: msg.sender,
             payee: payee,
             arbitrator: arbitrator,
             amount: amount,
             arbitratorFeeBps: feeBps,
-            state: EscrowState.Funded,
-            fundedAt: block.timestamp,
+            state: EscrowState.Offered,
+            offerDeadline: deadline,
+            fundedAt: 0,
             completedAt: 0,
             disputeWindow: disputeWindow,
+            fundingWindow: fundingWindow,
             disputedAt: 0,
-            completionDeadline: block.timestamp + fundingWindow
+            completionDeadline: 0
         });
 
         token.safeTransferFrom(msg.sender, address(this), amount);
 
-        emit Deposited(jobId, msg.sender, payee, amount, arbitrator, feeBps, disputeWindow);
+        emit Offered(jobId, msg.sender, payee, amount, arbitrator, feeBps, disputeWindow, deadline);
+    }
+
+    // ======================== ACTIVATE (Offered → Funded) ========================
+    function activateEscrow(bytes32 jobId) external {
+        Escrow storage e = escrows[jobId];
+        require(e.state == EscrowState.Offered, "Not offered");
+        require(block.timestamp <= e.offerDeadline, "Offer expired");
+
+        e.state = EscrowState.Funded;
+        e.fundedAt = block.timestamp;
+        e.completionDeadline = block.timestamp + e.fundingWindow;
+
+        emit Activated(jobId, msg.sender);
+    }
+
+    // ======================== WITHDRAW OFFER ========================
+    function withdrawOffer(bytes32 jobId) external nonReentrant {
+        Escrow storage e = escrows[jobId];
+        require(e.state == EscrowState.Offered, "Not offered");
+        require(
+            msg.sender == e.depositor || block.timestamp > e.offerDeadline,
+            "Only depositor before deadline"
+        );
+
+        e.state = EscrowState.Cancelled;
+        token.safeTransfer(e.depositor, e.amount);
+
+        emit OfferWithdrawn(jobId, e.depositor, e.amount);
     }
 
     // ======================== MARK COMPLETE ========================

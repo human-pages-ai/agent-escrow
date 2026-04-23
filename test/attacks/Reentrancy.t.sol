@@ -211,7 +211,8 @@ contract CrossFunctionReentrant is ERC20 {
                     72 hours,
                     30 days,
                     1e6,
-                    500
+                    500,
+                    12 hours
                 ) {
                     attackSucceeded = true;
                 } catch (bytes memory reason) {
@@ -268,7 +269,8 @@ contract ReentrantOnTransferFromDeposit is ERC20 {
                 72 hours,
                 30 days,
                 1e6,
-                500
+                500,
+                12 hours
             ) {
                 attackSucceeded = true;
             } catch (bytes memory reason) {
@@ -337,6 +339,7 @@ contract ReentrancyTest is Test {
     uint256 public constant AMOUNT = 100e6;
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     // ======================== HELPERS ========================
 
@@ -395,7 +398,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         // Mark complete
         vm.prank(relayer);
@@ -434,7 +438,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         // Complete and dispute
         vm.prank(relayer);
@@ -488,7 +493,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         // Propose cancel (split: 50/50)
         vm.prank(depositor);
@@ -507,7 +513,8 @@ contract ReentrancyTest is Test {
         address tokenAddr = address(token);
 
         vm.prank(depositor);
-        escrow.deposit(jobId2, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId2, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId2);
 
         vm.prank(depositor);
         escrow.proposeCancel(jobId2, AMOUNT / 2);
@@ -546,7 +553,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         // Complete, dispute, wait for arbitrator timeout
         vm.prank(relayer);
@@ -587,7 +595,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         vm.prank(relayer);
         escrow.markComplete(jobId);
@@ -627,7 +636,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         vm.prank(relayer);
         escrow.markComplete(jobId);
@@ -665,7 +675,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         vm.prank(relayer);
         escrow.markComplete(jobId);
@@ -701,7 +712,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         vm.prank(relayer);
         escrow.markComplete(jobId);
@@ -741,7 +753,8 @@ contract ReentrancyTest is Test {
         vm.prank(depositor);
         token.approve(address(escrow), type(uint256).max);
         vm.prank(depositor);
-        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, tokenAddr, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         vm.prank(relayer);
         escrow.markComplete(jobId);
@@ -790,11 +803,11 @@ contract ReentrancyTest is Test {
         // The first deposit triggers transferFrom which re-enters deposit with secondJobId.
         // nonReentrant blocks the second deposit.
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
 
-        // First deposit succeeded
+        // First deposit succeeded (now in Offered state, not yet activated)
         AgentEscrow.Escrow memory e1 = escrow.getEscrow(jobId);
-        assertEq(uint8(e1.state), uint8(AgentEscrow.EscrowState.Funded));
+        assertEq(uint8(e1.state), uint8(AgentEscrow.EscrowState.Offered));
 
         // Second deposit was blocked by reentrancy guard
         assertFalse(token.attackSucceeded(), "Reentrant deposit should have been blocked");

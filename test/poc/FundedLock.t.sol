@@ -30,6 +30,7 @@ contract FundedLockTest is Test {
     uint256 public constant AMOUNT = 500e6; // $500 USDC
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -43,7 +44,8 @@ contract FundedLockTest is Test {
         usdc.approve(address(escrow), AMOUNT);
 
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
 
         // Confirm escrow is Funded and contract holds the tokens
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);

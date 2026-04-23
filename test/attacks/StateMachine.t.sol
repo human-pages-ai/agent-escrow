@@ -59,7 +59,8 @@ contract EscrowHandler is Test {
         usdc.approve(address(escrow), amount);
 
         vm.prank(dep);
-        escrow.deposit(jobId, pay, arbitrator, 72 hours, 30 days, amount, feeBps);
+        escrow.deposit(jobId, pay, arbitrator, 72 hours, 30 days, amount, feeBps, 12 hours);
+        escrow.activateEscrow(jobId);
 
         activeJobIds.push(jobId);
         isFunded[jobId] = true;
@@ -188,6 +189,7 @@ contract StateMachineTest is Test {
     uint256 public constant AMOUNT = 100e6;
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     bytes public dummySig = new bytes(65);
 
@@ -218,7 +220,8 @@ contract StateMachineTest is Test {
 
     function _deposit(bytes32 _jobId) internal {
         vm.prank(depositor);
-        escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(_jobId);
     }
 
     function _complete() internal {
@@ -264,6 +267,11 @@ contract StateMachineTest is Test {
 
     function _toState(AgentEscrow.EscrowState target) internal {
         if (target == AgentEscrow.EscrowState.Empty) return;
+        if (target == AgentEscrow.EscrowState.Offered) {
+            vm.prank(depositor);
+            escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+            return;
+        }
         _deposit();
         if (target == AgentEscrow.EscrowState.Funded) return;
         _complete();
@@ -312,42 +320,49 @@ contract StateMachineTest is Test {
         _toState(AgentEscrow.EscrowState.Funded);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_sm_deposit_from_completed_reverts() public {
         _toState(AgentEscrow.EscrowState.Completed);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_sm_deposit_from_released_reverts() public {
         _toState(AgentEscrow.EscrowState.Released);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_sm_deposit_from_cancelled_reverts() public {
         _toState(AgentEscrow.EscrowState.Cancelled);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_sm_deposit_from_disputed_reverts() public {
         _toState(AgentEscrow.EscrowState.Disputed);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_sm_deposit_from_resolved_reverts() public {
         _toState(AgentEscrow.EscrowState.Resolved);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+    }
+
+    function test_sm_deposit_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
+        vm.prank(depositor);
+        vm.expectRevert("Escrow exists");
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     // ---- markComplete (requires Funded) ----
@@ -355,6 +370,13 @@ contract StateMachineTest is Test {
 
     function test_sm_markComplete_from_empty_reverts() public {
         // State is Empty (no deposit)
+        vm.prank(relayer);
+        vm.expectRevert("Not funded");
+        escrow.markComplete(jobId);
+    }
+
+    function test_sm_markComplete_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
         vm.prank(relayer);
         vm.expectRevert("Not funded");
         escrow.markComplete(jobId);
@@ -404,6 +426,13 @@ contract StateMachineTest is Test {
         escrow.release(jobId);
     }
 
+    function test_sm_release_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
+        vm.prank(depositor);
+        vm.expectRevert("Not completed");
+        escrow.release(jobId);
+    }
+
     function test_sm_release_from_funded_reverts() public {
         _toState(AgentEscrow.EscrowState.Funded);
         vm.prank(depositor);
@@ -443,6 +472,13 @@ contract StateMachineTest is Test {
     // Valid: Completed -> Disputed
 
     function test_sm_dispute_from_empty_reverts() public {
+        vm.prank(depositor);
+        vm.expectRevert("Not completed");
+        escrow.dispute(jobId);
+    }
+
+    function test_sm_dispute_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
         vm.prank(depositor);
         vm.expectRevert("Not completed");
         escrow.dispute(jobId);
@@ -491,6 +527,12 @@ contract StateMachineTest is Test {
         escrow.resolve(jobId, 0, 0, 1, dummySig);
     }
 
+    function test_sm_resolve_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
+        vm.expectRevert("Not disputed");
+        escrow.resolve(jobId, 0, 0, 1, dummySig);
+    }
+
     function test_sm_resolve_from_funded_reverts() public {
         _toState(AgentEscrow.EscrowState.Funded);
         vm.expectRevert("Not disputed");
@@ -525,6 +567,12 @@ contract StateMachineTest is Test {
     // Valid: Disputed -> Released
 
     function test_sm_forceRelease_from_empty_reverts() public {
+        vm.expectRevert("Not disputed");
+        escrow.forceRelease(jobId);
+    }
+
+    function test_sm_forceRelease_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
         vm.expectRevert("Not disputed");
         escrow.forceRelease(jobId);
     }
@@ -569,6 +617,13 @@ contract StateMachineTest is Test {
         escrow.proposeCancel(jobId, 0);
     }
 
+    function test_sm_proposeCancel_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
+        vm.prank(depositor);
+        vm.expectRevert("Cannot cancel");
+        escrow.proposeCancel(jobId, 0);
+    }
+
     function test_sm_proposeCancel_from_released_reverts() public {
         _toState(AgentEscrow.EscrowState.Released);
         vm.prank(depositor);
@@ -604,6 +659,13 @@ contract StateMachineTest is Test {
         // In Empty state, payee is address(0), so "Only payee" fires first
         vm.prank(payee);
         vm.expectRevert("Only payee");
+        escrow.acceptCancel(jobId);
+    }
+
+    function test_sm_acceptCancel_from_offered_reverts() public {
+        _toState(AgentEscrow.EscrowState.Offered);
+        vm.prank(payee);
+        vm.expectRevert("Cannot cancel");
         escrow.acceptCancel(jobId);
     }
 
@@ -670,7 +732,8 @@ contract StateMachineTest is Test {
 
         // Deposit
         vm.prank(depositor);
-        escrow.deposit(fuzzJobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, amount, feeBps);
+        escrow.deposit(fuzzJobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, amount, feeBps, OFFER_WINDOW);
+        escrow.activateEscrow(fuzzJobId);
 
         assertEq(
             usdc.balanceOf(address(escrow)),
@@ -736,7 +799,7 @@ contract StateMachineTest is Test {
         _toState(AgentEscrow.EscrowState.Released);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_final_released_markComplete_reverts() public {
@@ -792,7 +855,7 @@ contract StateMachineTest is Test {
         _toState(AgentEscrow.EscrowState.Cancelled);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_final_cancelled_markComplete_reverts() public {
@@ -848,7 +911,7 @@ contract StateMachineTest is Test {
         _toState(AgentEscrow.EscrowState.Resolved);
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     function test_final_resolved_markComplete_reverts() public {

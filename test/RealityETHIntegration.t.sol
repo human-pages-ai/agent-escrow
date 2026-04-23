@@ -34,6 +34,7 @@ contract RealityETHIntegrationTest is Test {
     bytes32 public jobId = keccak256("job-reality-001");
     uint256 public constant AMOUNT = 100e6; // $100 USDC
     uint32 public constant DISPUTE_WINDOW = 72 hours;
+    uint32 public constant OFFER_WINDOW = 12 hours;
     uint256 public constant FEE_BPS = 500; // 5%
     uint256 public constant ARB_FEE = (AMOUNT * FEE_BPS) / 10000; // 5e6
     uint256 public constant NET_AMOUNT = AMOUNT - ARB_FEE; // 95e6
@@ -65,7 +66,8 @@ contract RealityETHIntegrationTest is Test {
 
     function _depositWith(bytes32 _jobId, address _arbitrator) internal {
         vm.prank(depositor);
-        escrow.deposit(_jobId, payee, _arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(_jobId, payee, _arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(_jobId);
     }
 
     function _depositAndComplete() internal {
@@ -272,7 +274,8 @@ contract RealityETHIntegrationTest is Test {
         bytes32 eoaJobId = keccak256("job-eoa-001");
 
         vm.prank(depositor);
-        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(eoaJobId);
 
         vm.prank(relayer);
         escrow.markComplete(eoaJobId);
@@ -447,7 +450,8 @@ contract RealityETHIntegrationTest is Test {
 
         // setup job 2
         vm.prank(depositor);
-        escrow.deposit(jobId2, payee, address(adapter), DISPUTE_WINDOW, 30 days, 50e6, FEE_BPS);
+        escrow.deposit(jobId2, payee, address(adapter), DISPUTE_WINDOW, 30 days, 50e6, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId2);
         vm.prank(relayer);
         escrow.markComplete(jobId2);
         vm.prank(depositor);
@@ -537,7 +541,8 @@ contract RealityETHIntegrationTest is Test {
     function test_flowR_edgeAnswer_99percent() public {
         bytes32 jobId99 = keccak256("job-reality-99pct");
         vm.prank(depositor);
-        escrow.deposit(jobId99, payee, address(adapter), DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId99, payee, address(adapter), DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId99);
         vm.prank(relayer);
         escrow.markComplete(jobId99);
         vm.prank(depositor);
@@ -790,7 +795,8 @@ contract RealityETHIntegrationTest is Test {
         bytes32 eoaJobId = keccak256("job-eoa-disappear");
 
         vm.prank(depositor);
-        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(eoaJobId);
 
         vm.prank(relayer);
         escrow.markComplete(eoaJobId);
@@ -817,7 +823,8 @@ contract RealityETHIntegrationTest is Test {
         uint256 netAfterFee = AMOUNT - maxFee; // 50e6
 
         vm.prank(depositor);
-        escrow.deposit(maxFeeJobId, payee, address(adapter), DISPUTE_WINDOW, 30 days, AMOUNT, maxFeeBps);
+        escrow.deposit(maxFeeJobId, payee, address(adapter), DISPUTE_WINDOW, 30 days, AMOUNT, maxFeeBps, OFFER_WINDOW);
+        escrow.activateEscrow(maxFeeJobId);
 
         vm.prank(relayer);
         escrow.markComplete(maxFeeJobId);
@@ -1016,7 +1023,8 @@ contract RealityETHIntegrationTest is Test {
 
         usdc.mint(depositor, minAmount);
         vm.prank(depositor);
-        escrow.deposit(dustJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, minAmount, minFeeBps);
+        escrow.deposit(dustJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, minAmount, minFeeBps, OFFER_WINDOW);
+        escrow.activateEscrow(dustJobId);
 
         vm.prank(relayer);
         escrow.markComplete(dustJobId);

@@ -29,6 +29,7 @@ contract SignatureAttacks is Test {
     uint256 public constant AMOUNT = 100e6; // $100
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     bytes32 private constant VERDICT_TYPEHASH =
         keccak256("Verdict(bytes32 jobId,uint256 toPayee,uint256 toDepositor,uint256 nonce)");
@@ -59,7 +60,8 @@ contract SignatureAttacks is Test {
 
     function _deposit(AgentEscrow _escrow, bytes32 _jobId) internal {
         vm.prank(depositor);
-        _escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        _escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        _escrow.activateEscrow(_jobId);
     }
 
     function _depositCompleteDispute(AgentEscrow _escrow, bytes32 _jobId) internal {
@@ -237,7 +239,7 @@ contract SignatureAttacks is Test {
         // Try to deposit again with the same jobId — state is Resolved, not Empty
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
     }
 
     // ================================================================

@@ -28,6 +28,7 @@ contract EconomicAttacks is Test {
     uint256 public constant AMOUNT = 100e6; // $100 USDC
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     function setUp() public {
         arbitrator = vm.addr(arbitratorPk);
@@ -54,7 +55,8 @@ contract EconomicAttacks is Test {
 
     function _deposit() internal {
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
     }
 
     function _depositCustom(
@@ -66,7 +68,8 @@ contract EconomicAttacks is Test {
         uint256 _feeBps
     ) internal {
         vm.prank(_depositor);
-        escrow.deposit(_jobId, _payee, _arbitrator, DISPUTE_WINDOW, 30 days, _amount, _feeBps);
+        escrow.deposit(_jobId, _payee, _arbitrator, DISPUTE_WINDOW, 30 days, _amount, _feeBps, OFFER_WINDOW);
+        escrow.activateEscrow(_jobId);
     }
 
     function _depositAndComplete() internal {
@@ -121,12 +124,12 @@ contract EconomicAttacks is Test {
 
         // Attacker front-runs with the same jobId, setting their own payee
         vm.prank(attacker);
-        escrow.deposit(jobId, attackerPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, attackerPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
 
         // Legitimate depositor's tx now reverts
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
 
         // Attacker controls the escrow — funds go to attackerPayee
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
@@ -362,7 +365,7 @@ contract EconomicAttacks is Test {
         for (uint256 i = 0; i < numEscrows; i++) {
             bytes32 dustJobId = keccak256(abi.encodePacked("dust-", i));
             vm.prank(attacker);
-            escrow.deposit(dustJobId, dustPayee, dustArbitrator, 3 days, 30 days, minDeposit, 1);
+            escrow.deposit(dustJobId, dustPayee, dustArbitrator, 3 days, 30 days, minDeposit, 1, OFFER_WINDOW);
         }
 
         uint256 gasUsed = gasBefore - gasleft();

@@ -46,6 +46,7 @@ contract BlacklistResolveTest is Test {
     uint256 public constant AMOUNT = 100e6; // $100 USDC
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     function setUp() public {
         arbitrator = vm.addr(arbitratorPk);
@@ -64,7 +65,8 @@ contract BlacklistResolveTest is Test {
 
     function _deposit() internal {
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(jobId);
     }
 
     function _depositAndComplete() internal {

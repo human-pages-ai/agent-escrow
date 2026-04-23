@@ -72,6 +72,7 @@ contract GriefingDoSTest is Test {
     uint256 public constant AMOUNT = 100e6; // $100
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant OFFER_WINDOW = 12 hours;
 
     function setUp() public {
         arbitrator = vm.addr(arbitratorPk);
@@ -90,17 +91,20 @@ contract GriefingDoSTest is Test {
 
     function _deposit(bytes32 _jobId) internal {
         vm.prank(depositor);
-        escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(_jobId);
     }
 
     function _depositCustomPayee(bytes32 _jobId, address _payee) internal {
         vm.prank(depositor);
-        escrow.deposit(_jobId, _payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(_jobId, _payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(_jobId);
     }
 
     function _depositCustomDepositor(bytes32 _jobId, address _depositor, address _payee) internal {
         vm.prank(_depositor);
-        escrow.deposit(_jobId, _payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(_jobId, _payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow.activateEscrow(_jobId);
     }
 
     function _depositAndComplete(bytes32 _jobId) internal {
@@ -289,7 +293,7 @@ contract GriefingDoSTest is Test {
         bytes32 newJobId = keccak256("new-job");
         vm.prank(depositor);
         vm.expectRevert(); // Pausable: paused
-        escrow.deposit(newJobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow.deposit(newJobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
 
         // But release still works
         vm.prank(depositor);
@@ -438,7 +442,8 @@ contract GriefingDoSTest is Test {
         srt.approve(address(escrow2), type(uint256).max);
 
         vm.prank(depositor);
-        escrow2.deposit(jid, badPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow2.deposit(jid, badPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow2.activateEscrow(jid);
 
         vm.prank(relayer);
         escrow2.markComplete(jid);
@@ -491,7 +496,8 @@ contract GriefingDoSTest is Test {
         srt.approve(address(escrow2), type(uint256).max);
 
         vm.prank(depositor);
-        escrow2.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow2.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow2.activateEscrow(jid);
 
         vm.prank(relayer);
         escrow2.markComplete(jid);
@@ -702,7 +708,8 @@ contract GriefingDoSTest is Test {
         srt.approve(address(escrow2), type(uint256).max);
 
         vm.prank(depositor);
-        escrow2.deposit(jid, badPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+        escrow2.deposit(jid, badPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS, OFFER_WINDOW);
+        escrow2.activateEscrow(jid);
         vm.prank(relayer);
         escrow2.markComplete(jid);
         vm.prank(depositor);
