@@ -64,7 +64,7 @@ contract BlacklistResolveTest is Test {
 
     function _deposit() internal {
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     function _depositAndComplete() internal {

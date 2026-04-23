@@ -43,7 +43,7 @@ contract FundedLockTest is Test {
         usdc.approve(address(escrow), AMOUNT);
 
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Confirm escrow is Funded and contract holds the tokens
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
@@ -187,7 +187,7 @@ contract FundedLockTest is Test {
     // ---------------------------------------------------------------
 
     function test_fundsLockedAfter365Days() public {
-        // Warp 365 days into the future
+        // Warp 365 days into the future — well past the 30-day funding window
         vm.warp(block.timestamp + 365 days);
 
         // Escrow is still Funded
@@ -197,37 +197,30 @@ contract FundedLockTest is Test {
         // Funds are still in the contract
         assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
 
-        // Still no way for anyone other than depositor+payee to get them out
+        // Depositor can now claim via funding timeout
+        uint256 depositorBefore = usdc.balanceOf(depositor);
+        vm.prank(depositor);
+        escrow.claimFundingTimeout(jobId);
 
-        // Admin still can't do anything
-        vm.expectRevert("Only depositor");
-        escrow.proposeCancel(jobId, 0);
+        // Depositor gets full refund
+        assertEq(usdc.balanceOf(depositor), depositorBefore + AMOUNT);
+        assertEq(usdc.balanceOf(address(escrow)), 0);
 
-        // Random user can't do anything
-        vm.prank(randomUser);
-        vm.expectRevert("Not completed");
-        escrow.release(jobId);
-
-        vm.prank(randomUser);
-        vm.expectRevert("Not disputed");
-        escrow.forceRelease(jobId);
-
-        // Cannot mark complete and auto-release after timeout — only authorized parties
-        vm.prank(randomUser);
-        vm.expectRevert("Not authorized");
-        escrow.markComplete(jobId);
+        // State is now Cancelled
+        e = escrow.getEscrow(jobId);
+        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Cancelled));
     }
 
     // ---------------------------------------------------------------
     // 6. Full scenario: both parties gone, funds permanently locked
     // ---------------------------------------------------------------
 
-    function test_fullScenario_bothPartiesAbandon_fundsLocked() public {
+    function test_fullScenario_bothPartiesAbandon_depositorCanRecover() public {
         uint256 contractBalanceBefore = usdc.balanceOf(address(escrow));
         assertEq(contractBalanceBefore, AMOUNT, "Contract should hold the escrowed funds");
 
-        // --- Simulate both parties losing access ---
-        // (We simply never call any function as depositor or payee again)
+        // --- Simulate both parties losing interest ---
+        // Non-party actors still cannot force an exit before the funding window
 
         // Try every possible exit path as every possible actor (except depositor/payee)
         address[3] memory actors = [admin, relayer, randomUser];
@@ -254,22 +247,20 @@ contract FundedLockTest is Test {
             vm.stopPrank();
         }
 
-        // Warp far into the future
-        vm.warp(block.timestamp + 3650 days); // 10 years
+        // Warp past the 30-day funding window
+        vm.warp(block.timestamp + 31 days);
 
-        // Funds are STILL locked
-        uint256 contractBalanceAfter = usdc.balanceOf(address(escrow));
-        assertEq(contractBalanceAfter, AMOUNT, "Funds permanently locked - no exit path exists");
+        // Depositor can now recover funds via claimFundingTimeout
+        uint256 depositorBefore = usdc.balanceOf(depositor);
+        vm.prank(depositor);
+        escrow.claimFundingTimeout(jobId);
 
-        // State is still Funded
+        // Funds are NO LONGER locked — depositor gets full refund
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+        assertEq(usdc.balanceOf(depositor), depositorBefore + AMOUNT);
+
+        // State is Cancelled
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
-        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Funded));
-
-        // Final proof: contract balance equals locked amount, nobody can touch it
-        assertEq(
-            usdc.balanceOf(address(escrow)),
-            AMOUNT,
-            "VULNERABILITY CONFIRMED: $500 permanently locked with no recovery mechanism"
-        );
+        assertEq(uint8(e.state), uint8(AgentEscrow.EscrowState.Cancelled));
     }
 }

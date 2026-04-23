@@ -59,7 +59,7 @@ contract SignatureAttacks is Test {
 
     function _deposit(AgentEscrow _escrow, bytes32 _jobId) internal {
         vm.prank(depositor);
-        _escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        _escrow.deposit(_jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     function _depositCompleteDispute(AgentEscrow _escrow, bytes32 _jobId) internal {
@@ -237,7 +237,7 @@ contract SignatureAttacks is Test {
         // Try to deposit again with the same jobId — state is Resolved, not Empty
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     // ================================================================

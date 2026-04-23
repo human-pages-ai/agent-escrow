@@ -39,6 +39,7 @@ contract AgentEscrowTest is Test {
     uint256 public constant AMOUNT = 100e6; // $100
     uint32 public constant DISPUTE_WINDOW = 72 hours;
     uint256 public constant FEE_BPS = 500; // 5%
+    uint32 public constant FUNDING_WINDOW = 30 days;
 
     function setUp() public {
         arbitrator = vm.addr(arbitratorPk);
@@ -59,7 +60,7 @@ contract AgentEscrowTest is Test {
 
     function _deposit() internal {
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     function _depositAndComplete() internal {
@@ -288,7 +289,7 @@ contract AgentEscrowTest is Test {
         // Any address can be arbitrator — no gating
         address randomArb = makeAddr("randomArbiter");
         vm.prank(depositor);
-        escrow.deposit(keccak256("permissionless-job"), payee, randomArb, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(keccak256("permissionless-job"), payee, randomArb, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(keccak256("permissionless-job"));
         assertEq(e.arbitrator, randomArb);
@@ -306,7 +307,7 @@ contract AgentEscrowTest is Test {
         usdc.approve(address(escrow), type(uint256).max);
 
         vm.prank(depositor);
-        escrow.deposit(keccak256("big-job"), payee, arbitrator, DISPUTE_WINDOW, 5000e6, FEE_BPS);
+        escrow.deposit(keccak256("big-job"), payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 5000e6, FEE_BPS);
 
         AgentEscrow.Escrow memory e = escrow.getEscrow(keccak256("big-job"));
         assertEq(e.amount, 5000e6);
@@ -315,7 +316,7 @@ contract AgentEscrowTest is Test {
     function test_min_deposit_enforced() public {
         vm.prank(depositor);
         vm.expectRevert("Below minimum deposit");
-        escrow.deposit(keccak256("dust-job"), payee, arbitrator, DISPUTE_WINDOW, 0.5e6, FEE_BPS);
+        escrow.deposit(keccak256("dust-job"), payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 0.5e6, FEE_BPS);
     }
 
     // ================================================================
@@ -331,7 +332,7 @@ contract AgentEscrowTest is Test {
         usdc.approve(address(escrow), type(uint256).max);
 
         vm.prank(anyUser);
-        escrow.deposit(keccak256("no-blacklist"), payee, arbitrator, DISPUTE_WINDOW, 100e6, FEE_BPS);
+        escrow.deposit(keccak256("no-blacklist"), payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 100e6, FEE_BPS);
 
         assertEq(usdc.balanceOf(address(escrow)), 100e6);
     }
@@ -345,12 +346,12 @@ contract AgentEscrowTest is Test {
 
         vm.prank(depositor);
         vm.expectRevert();
-        escrow.deposit(keccak256("paused-job"), payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(keccak256("paused-job"), payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
 
         escrow.unpause();
 
         vm.prank(depositor);
-        escrow.deposit(keccak256("unpaused-job"), payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(keccak256("unpaused-job"), payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     function test_pause_reverts_non_admin() public {
@@ -525,41 +526,41 @@ contract AgentEscrowTest is Test {
         _deposit();
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     function test_deposit_reverts_self_arbitrator() public {
         vm.prank(depositor);
         vm.expectRevert("Depositor cannot be arbitrator");
-        escrow.deposit(jobId, payee, depositor, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, depositor, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     function test_deposit_reverts_self_payee() public {
         vm.prank(depositor);
         vm.expectRevert("Depositor cannot be payee");
-        escrow.deposit(jobId, depositor, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, depositor, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     function test_deposit_reverts_zero_fee() public {
         vm.prank(depositor);
         vm.expectRevert("Fee out of range");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, 0);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, 0);
     }
 
     function test_deposit_reverts_fee_above_max() public {
         vm.prank(depositor);
         vm.expectRevert("Fee out of range");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, 5001);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, 5001);
     }
 
     function test_deposit_reverts_invalid_dispute_window() public {
         vm.prank(depositor);
         vm.expectRevert("Invalid dispute window");
-        escrow.deposit(jobId, payee, arbitrator, 30 minutes, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, 30 minutes, FUNDING_WINDOW, AMOUNT, FEE_BPS);
 
         vm.prank(depositor);
         vm.expectRevert("Invalid dispute window");
-        escrow.deposit(jobId, payee, arbitrator, 31 days, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, 31 days, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     // ================================================================
@@ -598,7 +599,7 @@ contract AgentEscrowTest is Test {
     function test_deposit_reverts_payee_is_arbitrator() public {
         vm.prank(depositor);
         vm.expectRevert("Payee cannot be arbitrator");
-        escrow.deposit(jobId, arbitrator, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, arbitrator, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
     }
 
     // Fix #1: reject address(0) signer (invalid signature yields address(0))
@@ -682,7 +683,7 @@ contract AgentEscrowTest is Test {
         feeToken.approve(address(feeEscrow), type(uint256).max);
 
         vm.prank(depositor);
-        feeEscrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 100e6, FEE_BPS);
+        feeEscrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 100e6, FEE_BPS);
 
         uint256 actualBalance = feeToken.balanceOf(address(feeEscrow));
         uint256 recordedAmount = feeEscrow.getEscrow(jobId).amount;
@@ -700,12 +701,12 @@ contract AgentEscrowTest is Test {
 
         bytes32 targetJobId = keccak256("contested-job");
         vm.prank(attacker);
-        escrow.deposit(targetJobId, attackerPayee, arbitrator, DISPUTE_WINDOW, 1e6, 1);
+        escrow.deposit(targetJobId, attackerPayee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 1e6, 1);
 
         // Legitimate depositor blocked
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(targetJobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(targetJobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
         assertEq(escrow.getEscrow(targetJobId).payee, attackerPayee);
     }
 
@@ -713,14 +714,14 @@ contract AgentEscrowTest is Test {
     function test_attack_precompile_address_as_payee() public {
         address precompile = address(0x1);
         vm.prank(depositor);
-        escrow.deposit(keccak256("precompile-job"), precompile, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(keccak256("precompile-job"), precompile, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
         assertEq(escrow.getEscrow(keccak256("precompile-job")).payee, precompile);
     }
 
     // Edge math: MIN_DEPOSIT with MAX_ARBITRATOR_FEE_BPS — verify no dust lost
     function test_attack_edge_math_min_deposit_max_fee() public {
         vm.prank(depositor);
-        escrow.deposit(keccak256("edge-job"), payee, arbitrator, DISPUTE_WINDOW, 1e6, 5000);
+        escrow.deposit(keccak256("edge-job"), payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 1e6, 5000);
         uint256 fee = (1e6 * 5000) / 10000;
         assertEq(fee, 500000, "Fee is exactly half at max bps");
         assertEq(1e6, fee + (1e6 - fee), "Sum conservation holds");
@@ -735,7 +736,7 @@ contract AgentEscrowTest is Test {
         bytes32 testJobId = keccak256("cei-test");
         vm.prank(broke);
         vm.expectRevert();
-        escrow.deposit(testJobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(testJobId, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
 
         // EVM reverts entire tx — slot must be Empty
         assertEq(uint8(escrow.getEscrow(testJobId).state), uint8(AgentEscrow.EscrowState.Empty));
@@ -767,7 +768,7 @@ contract AgentEscrowTest is Test {
     function test_attack_depositor_arbitrator_collusion_max_fee() public {
         bytes32 jid = keccak256("collusion-job");
         vm.prank(depositor);
-        escrow.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, 5000);
+        escrow.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, 5000);
         vm.prank(relayer);
         escrow.markComplete(jid);
         vm.prank(depositor);
@@ -796,7 +797,7 @@ contract AgentEscrowTest is Test {
         // Setup job B with same params
         bytes32 jobId2 = keccak256("job-002");
         vm.prank(depositor);
-        escrow.deposit(jobId2, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId2, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, AMOUNT, FEE_BPS);
         vm.prank(relayer);
         escrow.markComplete(jobId2);
         vm.prank(depositor);
@@ -874,7 +875,7 @@ contract AgentEscrowTest is Test {
     function test_attack_fee_dust_with_min_bps() public {
         bytes32 jid = keccak256("dust-fee-job");
         vm.prank(depositor);
-        escrow.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 1e6, 1);
+        escrow.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, FUNDING_WINDOW, 1e6, 1);
         vm.prank(relayer);
         escrow.markComplete(jid);
         vm.prank(depositor);
@@ -1022,5 +1023,117 @@ contract AgentEscrowTest is Test {
         vm.prank(relayer);
         vm.expectRevert("Not funded");
         escrow.markComplete(jobId);
+    }
+
+    // ================================================================
+    // FUNDING TIMEOUT & EXTENSION TESTS
+    // ================================================================
+
+    function test_claimFundingTimeout_fullRefund() public {
+        _deposit();
+        uint256 balanceBefore = usdc.balanceOf(depositor);
+
+        // Warp past fundingDeadline
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        vm.warp(e.fundingDeadline + 1);
+
+        vm.prank(depositor);
+        escrow.claimFundingTimeout(jobId);
+
+        AgentEscrow.Escrow memory after_ = escrow.getEscrow(jobId);
+        assertEq(uint8(after_.state), uint8(AgentEscrow.EscrowState.Cancelled));
+        assertEq(usdc.balanceOf(depositor), balanceBefore + AMOUNT);
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+    }
+
+    function test_claimFundingTimeout_reverts_before_deadline() public {
+        _deposit();
+
+        vm.prank(depositor);
+        vm.expectRevert("Funding not expired");
+        escrow.claimFundingTimeout(jobId);
+    }
+
+    function test_claimFundingTimeout_reverts_non_depositor() public {
+        _deposit();
+
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        vm.warp(e.fundingDeadline + 1);
+
+        vm.prank(payee);
+        vm.expectRevert("Only depositor");
+        escrow.claimFundingTimeout(jobId);
+    }
+
+    function test_claimFundingTimeout_reverts_after_markComplete() public {
+        _depositAndComplete();
+
+        // Even past the original funding deadline, state is Completed not Funded
+        vm.warp(block.timestamp + 60 days);
+
+        vm.prank(depositor);
+        vm.expectRevert("Not funded");
+        escrow.claimFundingTimeout(jobId);
+    }
+
+    function test_extendFunding_extends_by_30_days() public {
+        _deposit();
+        AgentEscrow.Escrow memory before_ = escrow.getEscrow(jobId);
+        uint256 originalDeadline = before_.fundingDeadline;
+
+        vm.prank(depositor);
+        escrow.extendFunding(jobId);
+
+        AgentEscrow.Escrow memory after_ = escrow.getEscrow(jobId);
+        assertEq(after_.fundingDeadline, originalDeadline + 30 days);
+    }
+
+    function test_extendFunding_reverts_at_hard_cap() public {
+        // Deposit with 90 days funding window
+        bytes32 jid = keccak256("hardcap-job");
+        vm.prank(depositor);
+        escrow.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 90 days, AMOUNT, FEE_BPS);
+
+        // Extend 3 times: 90+30=120, 120+30=150, 150+30=180 (== MAX_FUNDING_DURATION, should succeed)
+        vm.prank(depositor);
+        escrow.extendFunding(jid);
+        vm.prank(depositor);
+        escrow.extendFunding(jid);
+        vm.prank(depositor);
+        escrow.extendFunding(jid);
+
+        // 4th time: 180+30=210 > 180 cap, should revert
+        vm.prank(depositor);
+        vm.expectRevert("Exceeds max funding duration");
+        escrow.extendFunding(jid);
+    }
+
+    function test_extendFunding_reverts_non_party() public {
+        _deposit();
+
+        address rando = makeAddr("rando");
+        vm.prank(rando);
+        vm.expectRevert("Only depositor");
+        escrow.extendFunding(jobId);
+    }
+
+    function test_extendFunding_reverts_payee() public {
+        _deposit();
+
+        vm.prank(payee);
+        vm.expectRevert("Only depositor");
+        escrow.extendFunding(jobId);
+    }
+
+    function test_deposit_reverts_invalid_funding_window() public {
+        // 6 days is below the 7-day minimum
+        vm.prank(depositor);
+        vm.expectRevert("Invalid funding window");
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 6 days, AMOUNT, FEE_BPS);
+
+        // 91 days is above the 90-day maximum
+        vm.prank(depositor);
+        vm.expectRevert("Invalid funding window");
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 91 days, AMOUNT, FEE_BPS);
     }
 }

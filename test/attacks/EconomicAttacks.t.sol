@@ -54,7 +54,7 @@ contract EconomicAttacks is Test {
 
     function _deposit() internal {
         vm.prank(depositor);
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     function _depositCustom(
@@ -66,7 +66,7 @@ contract EconomicAttacks is Test {
         uint256 _feeBps
     ) internal {
         vm.prank(_depositor);
-        escrow.deposit(_jobId, _payee, _arbitrator, DISPUTE_WINDOW, _amount, _feeBps);
+        escrow.deposit(_jobId, _payee, _arbitrator, DISPUTE_WINDOW, 30 days, _amount, _feeBps);
     }
 
     function _depositAndComplete() internal {
@@ -121,12 +121,12 @@ contract EconomicAttacks is Test {
 
         // Attacker front-runs with the same jobId, setting their own payee
         vm.prank(attacker);
-        escrow.deposit(jobId, attackerPayee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, attackerPayee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Legitimate depositor's tx now reverts
         vm.prank(depositor);
         vm.expectRevert("Escrow exists");
-        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Attacker controls the escrow — funds go to attackerPayee
         AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
@@ -362,7 +362,7 @@ contract EconomicAttacks is Test {
         for (uint256 i = 0; i < numEscrows; i++) {
             bytes32 dustJobId = keccak256(abi.encodePacked("dust-", i));
             vm.prank(attacker);
-            escrow.deposit(dustJobId, dustPayee, dustArbitrator, 3 days, minDeposit, 1);
+            escrow.deposit(dustJobId, dustPayee, dustArbitrator, 3 days, 30 days, minDeposit, 1);
         }
 
         uint256 gasUsed = gasBefore - gasleft();

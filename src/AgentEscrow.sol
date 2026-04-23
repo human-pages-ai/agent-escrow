@@ -24,6 +24,8 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     uint256 public constant ARBITRATOR_TIMEOUT = 7 days;
     uint256 public constant MAX_ARBITRATOR_TIMEOUT = 90 days;
     uint256 public constant MAX_ARBITRATOR_FEE_BPS = 5000;  // 50% structural cap
+    uint256 public constant MAX_FUNDING_DURATION = 180 days;
+    uint256 public constant FUNDING_EXTENSION = 30 days;
 
     // ======================== STORAGE ========================
     IERC20 public immutable token; // USDC
@@ -41,6 +43,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         uint256 completedAt;
         uint32 disputeWindow;
         uint256 disputedAt;
+        uint256 fundingDeadline;
     }
 
     struct CancelProposal {
@@ -78,6 +81,8 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
     event CancelProposed(bytes32 indexed jobId, uint256 amountToPayee, uint256 amountToDepositor);
     event CancelAccepted(bytes32 indexed jobId);
     event ForceReleased(bytes32 indexed jobId, address indexed payee, uint256 amount);
+    event FundingExtended(bytes32 indexed jobId, uint256 newDeadline);
+    event FundingTimedOut(bytes32 indexed jobId, address indexed depositor, uint256 amount);
 
     // ======================== CONSTRUCTOR ========================
     constructor(address _token) EIP712("AgentEscrow", "2") {
@@ -92,6 +97,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         address payee,
         address arbitrator,
         uint32 disputeWindow,
+        uint32 fundingWindow,
         uint256 amount,
         uint256 feeBps
     ) external whenNotPaused nonReentrant {
@@ -103,6 +109,7 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         require(payee != arbitrator, "Payee cannot be arbitrator");
         require(amount >= MIN_DEPOSIT, "Below minimum deposit");
         require(disputeWindow >= 3 days && disputeWindow <= 30 days, "Invalid dispute window");
+        require(fundingWindow >= 7 days && fundingWindow <= 90 days, "Invalid funding window");
         require(feeBps > 0 && feeBps <= MAX_ARBITRATOR_FEE_BPS, "Fee out of range");
 
         escrows[jobId] = Escrow({
@@ -115,7 +122,8 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
             fundedAt: block.timestamp,
             completedAt: 0,
             disputeWindow: disputeWindow,
-            disputedAt: 0
+            disputedAt: 0,
+            fundingDeadline: block.timestamp + fundingWindow
         });
 
         token.safeTransferFrom(msg.sender, address(this), amount);
@@ -284,6 +292,33 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         emit CancelAccepted(jobId);
     }
 
+    // ======================== FUNDING TIMEOUT ========================
+    function extendFunding(bytes32 jobId) external {
+        Escrow storage e = escrows[jobId];
+        require(e.state == EscrowState.Funded, "Not funded");
+        require(msg.sender == e.depositor, "Only depositor");
+
+        uint256 newDeadline = e.fundingDeadline + FUNDING_EXTENSION;
+        uint256 hardCap = e.fundedAt + MAX_FUNDING_DURATION;
+        require(newDeadline <= hardCap, "Exceeds max funding duration");
+
+        e.fundingDeadline = newDeadline;
+
+        emit FundingExtended(jobId, newDeadline);
+    }
+
+    function claimFundingTimeout(bytes32 jobId) external nonReentrant {
+        Escrow storage e = escrows[jobId];
+        require(e.state == EscrowState.Funded, "Not funded");
+        require(msg.sender == e.depositor, "Only depositor");
+        require(block.timestamp >= e.fundingDeadline, "Funding not expired");
+
+        e.state = EscrowState.Cancelled;
+        token.safeTransfer(e.depositor, e.amount);
+
+        emit FundingTimedOut(jobId, e.depositor, e.amount);
+    }
+
     // ======================== ADMIN (pause only) ========================
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
@@ -308,6 +343,11 @@ contract AgentEscrow is EIP712, AccessControl, Pausable, ReentrancyGuard {
         Escrow memory e = escrows[jobId];
         if (e.disputedAt == 0) return 0;
         return e.disputedAt + ARBITRATOR_TIMEOUT;
+    }
+
+    function getFundingDeadline(bytes32 jobId) external view returns (uint256) {
+        Escrow memory e = escrows[jobId];
+        return e.fundingDeadline;
     }
 
 }

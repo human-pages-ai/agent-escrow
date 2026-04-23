@@ -207,7 +207,7 @@ contract ERC20AttacksTest is Test {
         vm.prank(depositor);
         IERC20(tokenAddr).approve(address(esc), type(uint256).max);
         vm.prank(depositor);
-        esc.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jobId, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     function _doDepositAndComplete(
@@ -269,7 +269,7 @@ contract ERC20AttacksTest is Test {
 
         // Deposit 100e6 — contract records amount=100e6 but receives 99e6 (1% fee)
         vm.prank(depositor);
-        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Verify the contract actually holds less than recorded
         uint256 contractBalance = tok.balanceOf(address(esc));
@@ -442,7 +442,7 @@ contract ERC20AttacksTest is Test {
         tok.approve(address(esc), type(uint256).max);
         vm.prank(depositor);
         vm.expectRevert("Blacklisted: recipient");
-        esc.deposit(jid2, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid2, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Cancel accept also fails — all funds permanently locked
         vm.prank(depositor);
@@ -497,7 +497,7 @@ contract ERC20AttacksTest is Test {
         vm.prank(depositor);
         tok.approve(address(esc), type(uint256).max);
         vm.prank(depositor);
-        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         assertEq(tok.balanceOf(address(esc)), AMOUNT);
 
@@ -537,7 +537,7 @@ contract ERC20AttacksTest is Test {
 
         // Deposit consumes the approval
         vm.prank(depositor);
-        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Allowance should be 0 after exact-amount approval
         assertEq(tok.allowance(depositor, address(esc)), 0);
@@ -546,7 +546,7 @@ contract ERC20AttacksTest is Test {
         bytes32 jid2 = keccak256("approval-race-2");
         vm.prank(depositor);
         vm.expectRevert(); // ERC20InsufficientAllowance
-        esc.deposit(jid2, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid2, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     // ============================================================
@@ -565,7 +565,7 @@ contract ERC20AttacksTest is Test {
         vm.prank(depositor);
         tok.approve(address(esc), type(uint256).max);
         vm.prank(depositor);
-        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Contract received 99e6 (1% burned), but records 100e6
         uint256 bal = tok.balanceOf(address(esc));
@@ -609,7 +609,7 @@ contract ERC20AttacksTest is Test {
 
         // SAFE: deposit itself succeeds (amount >= MIN_DEPOSIT, all checks pass)
         vm.prank(depositor);
-        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, hugeAmount, FEE_BPS);
+        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, hugeAmount, FEE_BPS);
 
         vm.prank(relayer);
         esc.markComplete(jid);
@@ -654,7 +654,7 @@ contract ERC20AttacksTest is Test {
         bytes32 jid = keccak256("overflow-2");
 
         vm.prank(depositor);
-        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, hugeAmount, FEE_BPS);
+        esc.deposit(jid, payee, arbitrator, DISPUTE_WINDOW, 30 days, hugeAmount, FEE_BPS);
 
         vm.prank(relayer);
         esc.markComplete(jid);
@@ -694,13 +694,13 @@ contract ERC20AttacksTest is Test {
         vm.prank(depositor);
         tok.approve(address(esc), type(uint256).max);
         vm.prank(depositor);
-        esc.deposit(jid1, payee, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid1, payee, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Deposit 2
         vm.prank(depositor2);
         tok.approve(address(esc), type(uint256).max);
         vm.prank(depositor2);
-        esc.deposit(jid2, payee2, arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        esc.deposit(jid2, payee2, arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         // Contract recorded 200e6 total but only holds 198e6
         assertEq(tok.balanceOf(address(esc)), 198e6, "Two deposits with 1% fee each");

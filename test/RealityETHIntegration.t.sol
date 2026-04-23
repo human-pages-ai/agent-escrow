@@ -65,7 +65,7 @@ contract RealityETHIntegrationTest is Test {
 
     function _depositWith(bytes32 _jobId, address _arbitrator) internal {
         vm.prank(depositor);
-        escrow.deposit(_jobId, payee, _arbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(_jobId, payee, _arbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
     }
 
     function _depositAndComplete() internal {
@@ -272,7 +272,7 @@ contract RealityETHIntegrationTest is Test {
         bytes32 eoaJobId = keccak256("job-eoa-001");
 
         vm.prank(depositor);
-        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
 
         vm.prank(relayer);
         escrow.markComplete(eoaJobId);
@@ -447,7 +447,7 @@ contract RealityETHIntegrationTest is Test {
 
         // setup job 2
         vm.prank(depositor);
-        escrow.deposit(jobId2, payee, address(adapter), DISPUTE_WINDOW, 50e6, FEE_BPS);
+        escrow.deposit(jobId2, payee, address(adapter), DISPUTE_WINDOW, 30 days, 50e6, FEE_BPS);
         vm.prank(relayer);
         escrow.markComplete(jobId2);
         vm.prank(depositor);
@@ -537,7 +537,7 @@ contract RealityETHIntegrationTest is Test {
     function test_flowR_edgeAnswer_99percent() public {
         bytes32 jobId99 = keccak256("job-reality-99pct");
         vm.prank(depositor);
-        escrow.deposit(jobId99, payee, address(adapter), DISPUTE_WINDOW, AMOUNT, FEE_BPS);
+        escrow.deposit(jobId99, payee, address(adapter), DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
         vm.prank(relayer);
         escrow.markComplete(jobId99);
         vm.prank(depositor);
@@ -674,12 +674,361 @@ contract RealityETHIntegrationTest is Test {
     function test_flowX_questionContainsDisputeUrl() public {
         _depositCompleteAndDispute();
 
-        // The adapter creates a question on reality.eth with a URL pointing to the dispute page.
-        // We verify the question was created (questionId stored) and is on the bound oracle.
         vm.prank(depositor);
         bytes32 questionId = adapter.initiateDispute(jobId);
 
         assertTrue(questionId != bytes32(0));
         assertTrue(realityETH.isFinalized(questionId) == false);
+    }
+
+    // ======================== FLOW Y: DISPUTED WITHOUT INITIATE → FORCERELEASE WORKS ========================
+
+    function test_flowY_disputedNoInitiate_forceReleaseWorks() public {
+        _depositCompleteAndDispute();
+        // Nobody calls initiateDispute on adapter — no question exists
+
+        vm.warp(block.timestamp + 7 days);
+
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(anyone);
+        escrow.forceRelease(jobId);
+
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        assertTrue(e.state == AgentEscrow.EscrowState.Released);
+    }
+
+    // ======================== FLOW Z: INVALID REALITY.ETH ANSWER ========================
+
+    function test_flowZ_invalidAnswer_generateVerdictReverts() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        // reality.eth "invalid" sentinel
+        bytes32 invalidAnswer = bytes32(type(uint256).max);
+        realityETH.mockFinalize(questionId, invalidAnswer);
+
+        vm.prank(anyone);
+        vm.expectRevert("Invalid answer value");
+        adapter.generateVerdict(jobId);
+    }
+
+    function test_flowZ_invalidAnswer_forceReleaseAfterMaxTimeout() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        // Question finalized with invalid answer — generateVerdict will always revert
+        bytes32 invalidAnswer = bytes32(type(uint256).max);
+        realityETH.mockFinalize(questionId, invalidAnswer);
+
+        // forceRelease works after 7 days because question IS finalized (isDisputePending = false)
+        vm.warp(block.timestamp + 7 days);
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(anyone);
+        escrow.forceRelease(jobId);
+
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
+    }
+
+    function test_flowZ_answer100_reverts() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        realityETH.mockFinalize(questionId, bytes32(uint256(100)));
+
+        vm.prank(anyone);
+        vm.expectRevert("Invalid answer value");
+        adapter.generateVerdict(jobId);
+    }
+
+    // ======================== FLOW AA: RESOLVE vs FORCERELEASE RACE ========================
+
+    function test_flowAA_resolveVsForceRelease_resolveFirst() public {
+        _fullFlowUntilVerdict(bytes32(uint256(1))); // depositor wins
+
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce,) =
+            adapter.getVerdictParams(jobId);
+
+        // Warp past arbitrator timeout — both resolve and forceRelease callable
+        vm.warp(block.timestamp + 7 days);
+
+        // resolve lands first — depositor gets funds
+        uint256 depositorBefore = usdc.balanceOf(depositor);
+        vm.prank(anyone);
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, "");
+        assertEq(usdc.balanceOf(depositor), depositorBefore + NET_AMOUNT);
+
+        // forceRelease now reverts — state is Resolved
+        vm.prank(anyone);
+        vm.expectRevert("Not disputed");
+        escrow.forceRelease(jobId);
+    }
+
+    function test_flowAA_resolveVsForceRelease_forceReleaseFirst() public {
+        _fullFlowUntilVerdict(bytes32(uint256(1))); // depositor wins
+
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce,) =
+            adapter.getVerdictParams(jobId);
+
+        vm.warp(block.timestamp + 7 days);
+
+        // forceRelease lands first — payee gets everything
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(anyone);
+        escrow.forceRelease(jobId);
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
+
+        // resolve now reverts — state is Released
+        vm.prank(anyone);
+        vm.expectRevert("Not disputed");
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, "");
+    }
+
+    // ======================== FLOW AB: EOA ARBITRATOR DISAPPEARS ========================
+
+    function test_flowAB_eoaArbitratorDisappears_forceRelease() public {
+        bytes32 eoaJobId = keccak256("job-eoa-disappear");
+
+        vm.prank(depositor);
+        escrow.deposit(eoaJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, AMOUNT, FEE_BPS);
+
+        vm.prank(relayer);
+        escrow.markComplete(eoaJobId);
+
+        vm.prank(depositor);
+        escrow.dispute(eoaJobId);
+
+        // EOA never signs — no isDisputePending check (not a contract)
+        vm.warp(block.timestamp + 7 days);
+
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(anyone);
+        escrow.forceRelease(eoaJobId);
+
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
+    }
+
+    // ======================== FLOW AC: MAX FEE (50%) ========================
+
+    function test_flowAC_maxFee_halfToArbitrator() public {
+        bytes32 maxFeeJobId = keccak256("job-maxfee");
+        uint256 maxFeeBps = 5000; // 50%
+        uint256 maxFee = (AMOUNT * maxFeeBps) / 10000; // 50e6
+        uint256 netAfterFee = AMOUNT - maxFee; // 50e6
+
+        vm.prank(depositor);
+        escrow.deposit(maxFeeJobId, payee, address(adapter), DISPUTE_WINDOW, 30 days, AMOUNT, maxFeeBps);
+
+        vm.prank(relayer);
+        escrow.markComplete(maxFeeJobId);
+
+        uint256 adapterBefore = usdc.balanceOf(address(adapter));
+        vm.prank(depositor);
+        escrow.dispute(maxFeeJobId);
+
+        // 50% immediately to arbitrator
+        assertEq(usdc.balanceOf(address(adapter)), adapterBefore + maxFee);
+
+        // Only 50% remains in escrow
+        AgentEscrow.Escrow memory e = escrow.getEscrow(maxFeeJobId);
+        assertEq(e.amount, netAfterFee);
+    }
+
+    // ======================== FLOW AD: isDisputePending EDGE CASES ========================
+
+    function test_flowAD_isDisputePending_noQuestion() public {
+        // No question created — should return false
+        assertFalse(adapter.isDisputePending(jobId));
+    }
+
+    function test_flowAD_isDisputePending_activeQuestion() public {
+        _depositCompleteAndDispute();
+        _initiateDisputeOnAdapter();
+
+        assertTrue(adapter.isDisputePending(jobId));
+    }
+
+    function test_flowAD_isDisputePending_finalizedQuestion() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        realityETH.mockFinalize(questionId, bytes32(uint256(0)));
+
+        assertFalse(adapter.isDisputePending(jobId));
+    }
+
+    // ======================== FLOW AE: LONG DISPUTE CYCLE (BOND WARS) ========================
+
+    function test_flowAE_longBondEscalation_forceReleaseBlocked() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        // Simulate bond escalation over several days
+        uint256 bond = 0.01 ether;
+        for (uint256 i = 0; i < 6; i++) {
+            address answerer = (i % 2 == 0) ? answerer1 : answerer2;
+            bytes32 answer = (i % 2 == 0) ? bytes32(uint256(1)) : bytes32(uint256(0));
+            vm.prank(answerer);
+            realityETH.submitAnswer{value: bond}(questionId, answer, 0);
+            bond *= 2;
+            vm.warp(block.timestamp + 12 hours);
+        }
+
+        // Last answer was 12 hours ago, timeout is 24h, question still open.
+        // Total elapsed: ~3.5 days of escalation + 12h = 4 days from dispute.
+        // Warp to just past 7-day ARBITRATOR_TIMEOUT but question is still pending.
+        vm.warp(block.timestamp + 4 days);
+
+        // Now submit one more answer to keep the question alive
+        vm.prank(answerer1);
+        realityETH.submitAnswer{value: bond}(questionId, bytes32(uint256(1)), 0);
+
+        // Warp past 7-day timeout but last answer was just now
+        vm.warp(block.timestamp + 7 days);
+
+        // Question still not finalized (last answer was 7 days ago, timeout is 24h)
+        // Wait — 7 days > 24h so it IS finalized. Need to submit closer to the check.
+        // Actually at this point lastAnswerTs + 24h < block.timestamp. So it's finalized.
+        // Let's just submit right before the forceRelease attempt.
+        vm.prank(answerer2);
+        realityETH.submitAnswer{value: bond * 2}(questionId, bytes32(uint256(0)), 0);
+
+        // Now lastAnswerTs = block.timestamp, question open for 24h
+        vm.prank(anyone);
+        vm.expectRevert("Arbitrator dispute still active");
+        escrow.forceRelease(jobId);
+    }
+
+    function test_flowAE_longBondEscalation_resolveAfterFinalize() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        // Bond war: answerer1 says depositor wins, answerer2 says payee wins
+        vm.prank(answerer1);
+        realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(1)), 0);
+        vm.warp(block.timestamp + 12 hours);
+
+        vm.prank(answerer2);
+        realityETH.submitAnswer{value: 0.02 ether}(questionId, bytes32(uint256(0)), 0);
+        vm.warp(block.timestamp + 12 hours);
+
+        vm.prank(answerer1);
+        realityETH.submitAnswer{value: 0.04 ether}(questionId, bytes32(uint256(1)), 0);
+
+        // Finalize after timeout
+        vm.warp(block.timestamp + 25 hours);
+
+        adapter.generateVerdict(jobId);
+
+        (uint256 toPayee, uint256 toDepositor, uint256 nonce,) =
+            adapter.getVerdictParams(jobId);
+        assertEq(toPayee, 0);
+        assertEq(toDepositor, NET_AMOUNT);
+
+        vm.prank(anyone);
+        escrow.resolve(jobId, toPayee, toDepositor, nonce, "");
+
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        assertTrue(e.state == AgentEscrow.EscrowState.Resolved);
+    }
+
+    // ======================== FLOW AF: NOBODY ANSWERS ON REALITY.ETH ========================
+
+    function test_flowAF_noAnswers_blockedUntil90Days() public {
+        _depositCompleteAndDispute();
+        _initiateDisputeOnAdapter();
+
+        // 7 days pass — forceRelease blocked (question pending, no answer)
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(anyone);
+        vm.expectRevert("Arbitrator dispute still active");
+        escrow.forceRelease(jobId);
+
+        // 30 days — still blocked
+        vm.warp(block.timestamp + 23 days); // total 30 days
+        vm.prank(anyone);
+        vm.expectRevert("Arbitrator dispute still active");
+        escrow.forceRelease(jobId);
+
+        // 90 days — hard cap overrides, forceRelease works
+        vm.warp(block.timestamp + 60 days); // total 90 days
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(anyone);
+        escrow.forceRelease(jobId);
+        assertEq(usdc.balanceOf(payee), payeeBefore + NET_AMOUNT);
+    }
+
+    // ======================== FLOW AG: DISPUTE WINDOW EXACT BOUNDARY ========================
+
+    function test_flowAG_disputeAtExactBoundary_reverts() public {
+        _depositAndComplete();
+
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        // Warp to exactly completedAt + disputeWindow (boundary)
+        vm.warp(e.completedAt + e.disputeWindow);
+
+        // Dispute uses < (strict), so at exact boundary it fails
+        vm.prank(depositor);
+        vm.expectRevert("Dispute window passed");
+        escrow.dispute(jobId);
+    }
+
+    function test_flowAG_disputeOneSecondBeforeBoundary_succeeds() public {
+        _depositAndComplete();
+
+        AgentEscrow.Escrow memory e = escrow.getEscrow(jobId);
+        vm.warp(e.completedAt + e.disputeWindow - 1);
+
+        vm.prank(depositor);
+        escrow.dispute(jobId);
+
+        e = escrow.getEscrow(jobId);
+        assertTrue(e.state == AgentEscrow.EscrowState.Disputed);
+    }
+
+    // ======================== FLOW AH: DOUBLE GENERATEVERDICT BY DIFFERENT CALLERS ========================
+
+    function test_flowAH_doubleGenerateVerdict_secondCallerReverts() public {
+        _depositCompleteAndDispute();
+        bytes32 questionId = _initiateDisputeOnAdapter();
+
+        vm.prank(answerer1);
+        realityETH.submitAnswer{value: 0.01 ether}(questionId, bytes32(uint256(0)), 0);
+        vm.warp(block.timestamp + 25 hours);
+
+        // First caller succeeds
+        vm.prank(depositor);
+        adapter.generateVerdict(jobId);
+
+        // Second caller reverts
+        vm.prank(payee);
+        vm.expectRevert("Verdict already generated");
+        adapter.generateVerdict(jobId);
+    }
+
+    // ======================== FLOW AI: MIN FEE + MIN DEPOSIT ========================
+
+    function test_flowAI_minFeeMinDeposit_dustFee() public {
+        bytes32 dustJobId = keccak256("job-dust");
+        uint256 minAmount = 1e6; // 1 USDC
+        uint256 minFeeBps = 1; // 0.01%
+        uint256 dustFee = (minAmount * minFeeBps) / 10000; // 100 wei = 0.0001 USDC
+
+        usdc.mint(depositor, minAmount);
+        vm.prank(depositor);
+        escrow.deposit(dustJobId, payee, eoaArbitrator, DISPUTE_WINDOW, 30 days, minAmount, minFeeBps);
+
+        vm.prank(relayer);
+        escrow.markComplete(dustJobId);
+
+        uint256 arbBefore = usdc.balanceOf(eoaArbitrator);
+        vm.prank(depositor);
+        escrow.dispute(dustJobId);
+
+        assertEq(usdc.balanceOf(eoaArbitrator), arbBefore + dustFee);
+        assertEq(dustFee, 100); // 100 wei = 0.0001 USDC
+
+        AgentEscrow.Escrow memory e = escrow.getEscrow(dustJobId);
+        assertEq(e.amount, minAmount - dustFee);
     }
 }
